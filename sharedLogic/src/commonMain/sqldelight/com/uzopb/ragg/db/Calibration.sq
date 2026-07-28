@@ -1,0 +1,21 @@
+CREATE TABLE CalibrationAnchor (
+  modelId TEXT NOT NULL,
+  backend TEXT NOT NULL,
+  tokPerSec REAL NOT NULL,
+  deviceFingerprint TEXT NOT NULL PRIMARY KEY,
+  measuredAt INTEGER NOT NULL
+);
+
+selectByFingerprint:
+SELECT *
+FROM CalibrationAnchor
+WHERE deviceFingerprint = ?;
+
+upsert:
+INSERT OR REPLACE INTO CalibrationAnchor(
+  modelId, backend, tokPerSec, deviceFingerprint, measuredAt
+)
+VALUES (?, ?, ?, ?, ?);
+
+clearAll:
+DELETE FROM CalibrationAnchor;

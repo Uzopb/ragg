@@ -1,12 +1,8 @@
 package com.uzopb.ragg.db
 
 /**
- * Stage 0 placeholder. SQLDelight schema + drivers arrive in stage 5a.
+ * Ворота к SQLDelight. Этап 3: InstalledModel + Calibration; Corpus — этап 5a.
  */
 interface DatabaseGate {
     val isReady: Boolean
-}
-
-object StubDatabaseGate : DatabaseGate {
-    override val isReady: Boolean = false
 }

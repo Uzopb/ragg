@@ -1,0 +1,35 @@
+CREATE TABLE InstalledModel (
+  id TEXT NOT NULL PRIMARY KEY,
+  path TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  role TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 0
+);
+
+selectAll:
+SELECT *
+FROM InstalledModel;
+
+selectById:
+SELECT *
+FROM InstalledModel
+WHERE id = ?;
+
+upsert:
+INSERT OR REPLACE INTO InstalledModel(id, path, bytes, sha256, role, active)
+VALUES (?, ?, ?, ?, ?, ?);
+
+setActiveForRole:
+UPDATE InstalledModel
+SET active = CASE WHEN id = ? THEN 1 ELSE 0 END
+WHERE role = ?;
+
+clearActive:
+UPDATE InstalledModel
+SET active = 0
+WHERE id = ?;
+
+deleteById:
+DELETE FROM InstalledModel
+WHERE id = ?;

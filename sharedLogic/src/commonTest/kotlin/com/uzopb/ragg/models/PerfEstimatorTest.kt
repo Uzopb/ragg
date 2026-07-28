@@ -122,7 +122,7 @@ class PerfEstimatorTest {
                 service.runEtalonBenchmark(midPhone, networkAvailable = false)
             }
             assertTrue(err.message!!.contains("нужна сеть"))
-            assertNull(store.get())
+            assertNull(store.get(PerfEstimator.deviceFingerprint(midPhone)))
         }
     }
 
@@ -141,7 +141,7 @@ class PerfEstimatorTest {
 
             val t = service.runEtalonBenchmark(midPhone, networkAvailable = true)
             assertEquals(5.0f, t)
-            val anchor = assertNotNull(store.get())
+            val anchor = assertNotNull(store.get(PerfEstimator.deviceFingerprint(midPhone)))
             assertEquals(ModelCatalog.DEFAULT.etalon().id, anchor.modelId)
             assertEquals(PerfEstimator.deviceFingerprint(midPhone), anchor.deviceFingerprint)
             assertTrue(local.isPresent(anchor.modelId))

@@ -5,14 +5,21 @@ import com.uzopb.ragg.ai.LlmEngine
 import com.uzopb.ragg.ai.MockEmbeddingEngine
 import com.uzopb.ragg.ai.MockLlmEngine
 import com.uzopb.ragg.db.DatabaseGate
-import com.uzopb.ragg.db.StubDatabaseGate
+import com.uzopb.ragg.db.RaggDatabase
+import com.uzopb.ragg.db.SqlCalibrationStore
+import com.uzopb.ragg.db.SqlDelightDatabaseGate
+import com.uzopb.ragg.db.SqlInstalledModelStore
+import com.uzopb.ragg.models.CacheStorageStatsProvider
 import com.uzopb.ragg.models.CalibrationStore
 import com.uzopb.ragg.models.EtalonBenchmarkService
-import com.uzopb.ragg.models.InMemoryCalibrationStore
 import com.uzopb.ragg.models.InMemoryLocalModelRegistry
+import com.uzopb.ragg.models.InstalledModelStore
 import com.uzopb.ragg.models.LocalModelRegistry
 import com.uzopb.ragg.models.ModelCatalog
+import com.uzopb.ragg.models.ModelDownloader
+import com.uzopb.ragg.models.ModelManager
 import com.uzopb.ragg.models.ModelsDomain
+import com.uzopb.ragg.models.StorageStatsProvider
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -57,7 +64,10 @@ val networkModule: Module = module {
 }
 
 val databaseModule: Module = module {
-    single<DatabaseGate> { StubDatabaseGate }
+    single { RaggDatabase(get()) }
+    single<DatabaseGate> { SqlDelightDatabaseGate(get()) }
+    single<CalibrationStore> { SqlCalibrationStore(get()) }
+    single<InstalledModelStore> { SqlInstalledModelStore(get()) }
 }
 
 val aiModule: Module = module {
@@ -68,7 +78,32 @@ val aiModule: Module = module {
 val modelsModule: Module = module {
     single { ModelsDomain }
     single { ModelCatalog.DEFAULT }
-    single<CalibrationStore> { InMemoryCalibrationStore() }
+    single {
+        ModelDownloader(
+            httpClient = get(),
+            cachePaths = get(),
+            fs = get(),
+        )
+    }
+    single<StorageStatsProvider> {
+        CacheStorageStatsProvider(
+            cachePaths = get(),
+            fs = get(),
+            installed = get(),
+        )
+    }
+    single {
+        ModelManager(
+            catalog = get(),
+            hardwareProbe = get(),
+            downloader = get(),
+            installed = get(),
+            calibrationStore = get(),
+            networkStatus = get(),
+            llmEngine = get(),
+        )
+    }
+    // совместимость с тестами/API этапа 2
     single<LocalModelRegistry> { InMemoryLocalModelRegistry() }
     single {
         EtalonBenchmarkService(

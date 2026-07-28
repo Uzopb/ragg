@@ -4,6 +4,15 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidMultiplatformLibrary)
     alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.sqldelight)
+}
+
+sqldelight {
+    databases {
+        create("RaggDatabase") {
+            packageName.set("com.uzopb.ragg.db")
+        }
+    }
 }
 
 kotlin {
@@ -49,6 +58,10 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.koin.test)
+            implementation(libs.ktor.client.mock)
+        }
+        jvmTest.dependencies {
+            implementation(libs.sqldelight.sqlite.driver)
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)

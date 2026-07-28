@@ -4,6 +4,8 @@ import com.uzopb.ragg.device.HardwareProbe
 import com.uzopb.ragg.device.PlatformKind
 import com.uzopb.ragg.models.EtalonBenchmarkService
 import com.uzopb.ragg.models.ModelCatalog
+import com.uzopb.ragg.models.ModelManager
+import com.uzopb.ragg.db.DatabaseGate
 import io.ktor.client.HttpClient
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -16,7 +18,7 @@ import org.koin.test.KoinTest
 import org.koin.test.get
 
 /**
- * Koin резолвит HttpClient, HardwareProbe и models (каталог / бенч эталона).
+ * Koin резолвит HttpClient, HardwareProbe, ModelManager и SQLDelight gate.
  */
 class KoinBootstrapTest : KoinTest {
 
@@ -50,5 +52,11 @@ class KoinBootstrapTest : KoinTest {
         val catalog = get<ModelCatalog>()
         assertTrue(catalog.all().isNotEmpty())
         assertNotNull(get<EtalonBenchmarkService>())
+    }
+
+    @Test
+    fun resolvesModelManagerAndDatabaseGate() {
+        assertNotNull(get<ModelManager>())
+        assertTrue(get<DatabaseGate>().isReady)
     }
 }

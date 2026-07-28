@@ -29,7 +29,7 @@ enum class Confidence {
 }
 
 /**
- * Локальный статус файла модели (до SQLDelight этапа 3 — in-memory registry).
+ * Локальный статус файла модели (InstalledModel / кэш).
  */
 enum class LocalModelStatus {
     NotDownloaded,

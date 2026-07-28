@@ -1,6 +1,6 @@
 package com.uzopb.ragg.models
 
 /**
- * Маркер пакета models (этапы 2–3). Каталог / PerfEstimator / калибровка — рядом.
+ * Маркер пакета models (каталог, PerfEstimator, ModelManager).
  */
 object ModelsDomain

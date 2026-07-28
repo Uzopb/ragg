@@ -1,36 +1,112 @@
 package com.uzopb.ragg.models
 
-import com.uzopb.ragg.device.HardwareProfile
-import com.uzopb.ragg.device.InferBackend
-
 /**
- * Хранилище якоря калибровки. На этапе 2 — in-memory; SQLDelight — этап 3/5a.
+ * Хранилище якоря калибровки. Ключ выборки — [deviceFingerprint].
  */
 interface CalibrationStore {
-    fun get(): Calibration?
+    fun get(deviceFingerprint: String): Calibration?
     fun save(calibration: Calibration)
     fun clear()
 }
 
 /**
- * In-memory реализация [CalibrationStore] для этапа 2 и тестов.
+ * In-memory реализация [CalibrationStore] для тестов и этапа 2.
  */
 class InMemoryCalibrationStore : CalibrationStore {
-    private var value: Calibration? = null
+    private val byFingerprint = mutableMapOf<String, Calibration>()
 
-    override fun get(): Calibration? = value
+    override fun get(deviceFingerprint: String): Calibration? = byFingerprint[deviceFingerprint]
 
     override fun save(calibration: Calibration) {
-        value = calibration
+        byFingerprint[calibration.deviceFingerprint] = calibration
     }
 
     override fun clear() {
-        value = null
+        byFingerprint.clear()
     }
 }
 
 /**
- * Учёт скачанных моделей без CachePaths/Ktor (этап 3).
+ * Учёт установленных моделей (файл + роль + active).
+ */
+interface InstalledModelStore {
+    fun status(modelId: String): LocalModelStatus
+    fun isPresent(modelId: String): Boolean =
+        status(modelId) != LocalModelStatus.NotDownloaded
+
+    fun upsert(
+        id: String,
+        path: String,
+        bytes: Long,
+        sha256: String,
+        role: ModelRole,
+        active: Boolean = false,
+    )
+
+    fun setActive(id: String, role: ModelRole)
+    fun remove(id: String)
+    fun statuses(): Map<String, LocalModelStatus>
+    fun totalBytes(): Long
+}
+
+/**
+ * In-memory registry установленных моделей.
+ */
+class InMemoryInstalledModelStore : InstalledModelStore {
+    private data class Row(
+        val path: String,
+        val bytes: Long,
+        val sha256: String,
+        val role: ModelRole,
+        val active: Boolean,
+    )
+
+    private val map = mutableMapOf<String, Row>()
+
+    override fun status(modelId: String): LocalModelStatus {
+        val row = map[modelId] ?: return LocalModelStatus.NotDownloaded
+        return if (row.active) LocalModelStatus.Active else LocalModelStatus.Downloaded
+    }
+
+    override fun upsert(
+        id: String,
+        path: String,
+        bytes: Long,
+        sha256: String,
+        role: ModelRole,
+        active: Boolean,
+    ) {
+        map[id] = Row(path, bytes, sha256, role, active)
+    }
+
+    override fun setActive(id: String, role: ModelRole) {
+        val row = map[id] ?: error("модель $id не установлена")
+        map.replaceAll { key, value ->
+            if (value.role != role) {
+                value
+            } else {
+                value.copy(active = key == id)
+            }
+        }
+        // на случай рассинхрона role в записи
+        map[id] = (map[id] ?: row).copy(role = role, active = true)
+    }
+
+    override fun remove(id: String) {
+        map.remove(id)
+    }
+
+    override fun statuses(): Map<String, LocalModelStatus> =
+        map.mapValues { (_, v) ->
+            if (v.active) LocalModelStatus.Active else LocalModelStatus.Downloaded
+        }
+
+    override fun totalBytes(): Long = map.values.sumOf { it.bytes }
+}
+
+/**
+ * Учёт установленных моделей (совместимость с EtalonBenchmarkService этапа 2).
+ * Новый код — [InstalledModelStore].
  */
 interface LocalModelRegistry {
     fun status(modelId: String): LocalModelStatus
@@ -42,7 +118,7 @@ interface LocalModelRegistry {
 }
 
 /**
- * In-memory registry установленных моделей (mock download для этапа 2).
+ * In-memory [LocalModelRegistry] (совместимость с тестами этапа 2).
  */
 class InMemoryLocalModelRegistry : LocalModelRegistry {
     private val map = mutableMapOf<String, LocalModelStatus>()
@@ -60,7 +136,6 @@ class InMemoryLocalModelRegistry : LocalModelRegistry {
     }
 
     override fun markActive(modelId: String) {
-        // Одна активная LLM/роль уточнится в ModelManager этапа 3; здесь — простой флаг.
         map[modelId] = LocalModelStatus.Active
     }
 
@@ -77,13 +152,9 @@ class InMemoryLocalModelRegistry : LocalModelRegistry {
 class EtalonBenchmarkException(message: String) : Exception(message)
 
 /**
- * Бенч эталона для якоря [Calibration].
+ * Бенч эталона для якоря [Calibration] (этап 2 API; этап 3 — [ModelManager]).
  *
- * До этапа 6 — **синтетический** tok/s (Mock). Реальный download — этап 3 (Ktor);
- * здесь при наличии сети и отсутствии файла — mock «скачали».
- *
- * Pre: etalon в каталоге; файл на месте **или** сеть доступна.
- * Post: якорь записан в [CalibrationStore] с fingerprint профиля.
+ * До этапа 6 — **синтетический** tok/s (Mock).
  */
 class EtalonBenchmarkService(
     private val catalog: ModelCatalog,
@@ -98,7 +169,7 @@ class EtalonBenchmarkService(
      * @throws EtalonBenchmarkException если файла нет и [networkAvailable]=false («нужна сеть»).
      */
     suspend fun runEtalonBenchmark(
-        profile: HardwareProfile,
+        profile: com.uzopb.ragg.device.HardwareProfile,
         networkAvailable: Boolean,
     ): Float {
         val etalon = catalog.etalon()
@@ -106,14 +177,13 @@ class EtalonBenchmarkService(
             if (!networkAvailable) {
                 throw EtalonBenchmarkException("нужна сеть")
             }
-            // Этап 2/3 граница: имитация download; реальный Ktor — ModelDownloader этапа 3.
             localModels.markDownloaded(etalon.id)
         }
         val tok = mockTokPerSec
         calibrationStore.save(
             Calibration(
                 modelId = etalon.id,
-                backend = InferBackend.Cpu,
+                backend = com.uzopb.ragg.device.InferBackend.Cpu,
                 tokPerSec = tok,
                 deviceFingerprint = PerfEstimator.deviceFingerprint(profile),
                 measuredAtEpochMs = nowMs(),
