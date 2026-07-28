@@ -14,6 +14,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.uzopb.ragg.ai.llama.isLlamaNativeLinked
 import com.uzopb.ragg.device.CapabilityScorer
 import com.uzopb.ragg.device.HardwareProbe
+import com.uzopb.ragg.models.ModelCatalog
+import com.uzopb.ragg.models.PerfEstimator
 import org.koin.compose.koinInject
 
 @Composable
@@ -23,6 +25,8 @@ fun App() {
         val hardwareProbe = koinInject<HardwareProbe>()
         val profile = remember(hardwareProbe) { hardwareProbe.probe() }
         val score = remember(profile) { CapabilityScorer.score(profile) }
+        val cards = remember(profile) { PerfEstimator.estimate(profile, ModelCatalog.DEFAULT) }
+        val etalonFit = cards.firstOrNull { it.model.isEtalon }?.fit
 
         Column(
             modifier = Modifier
@@ -41,6 +45,7 @@ fun App() {
             Text(
                 "scores cpu=${fmt(score.cpuScore)} gpu=${fmt(score.gpuScore)} ram=${fmt(score.ramScore)}",
             )
+            Text("catalog=${cards.size} · etalon fit=$etalonFit · без якоря")
             Text("llama.cpp linked=${isLlamaNativeLinked()}")
         }
     }
