@@ -2,12 +2,16 @@ package com.uzopb.ragg
 
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import com.uzopb.ragg.di.initKoin
 
-fun main() = application {
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "ragg",
-    ) {
-        App()
+fun main() {
+    initKoin()
+    application {
+        Window(
+            onCloseRequest = ::exitApplication,
+            title = "RAGG",
+        ) {
+            App()
+        }
     }
 }
