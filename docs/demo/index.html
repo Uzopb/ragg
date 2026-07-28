@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="screen-orientation" content="portrait" />
+  <title>RAGG</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app" class="app" data-screen="home">
+    <!-- Orientation lock -->
+    <div id="orient-lock" class="orient-lock" hidden aria-live="assertive">
+      <div class="orient-lock__inner">
+        <div class="orient-lock__icon" aria-hidden="true"></div>
+        <p class="orient-lock__title">Поверните устройство</p>
+        <p class="orient-lock__text">Приложение работает только в портретной ориентации</p>
+      </div>
+    </div>
+
+    <!-- Background atmosphere -->
+    <div class="atmosphere" aria-hidden="true">
+      <div class="atmosphere__pearl"></div>
+      <div class="atmosphere__sheen"></div>
+      <div class="atmosphere__grain"></div>
+    </div>
+
+    <!-- ========== POWER CHECK ========== -->
+    <section id="screen-power" class="screen screen--power" hidden>
+      <header class="brand-head">
+        <h1 class="brand">RAGG</h1>
+        <p class="brand-sub">Локальный RAG · без облака</p>
+      </header>
+
+      <div class="power-card">
+        <p class="eyebrow">Первый запуск</p>
+        <h2 class="screen-title" id="power-title">Проверка мощности</h2>
+        <p class="screen-lead" id="power-lead">Снимаем профиль железа и калибруем эталонную модель на этом устройстве.</p>
+
+        <div class="hw-grid" id="hw-grid">
+          <div class="hw-cell">
+            <span class="hw-label">CPU</span>
+            <span class="hw-value" id="hw-cpu">—</span>
+          </div>
+          <div class="hw-cell">
+            <span class="hw-label">RAM</span>
+            <span class="hw-value" id="hw-ram">—</span>
+          </div>
+          <div class="hw-cell">
+            <span class="hw-label">GPU</span>
+            <span class="hw-value" id="hw-gpu">—</span>
+          </div>
+          <div class="hw-cell">
+            <span class="hw-label">Tier</span>
+            <span class="hw-value" id="hw-tier">—</span>
+          </div>
+        </div>
+
+        <div class="bench" id="bench-block">
+          <div class="bench__row">
+            <span id="bench-phase">Подготовка…</span>
+            <span id="bench-pct">0%</span>
+          </div>
+          <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="progress__bar" id="bench-bar"></div>
+          </div>
+          <p class="bench__hint" id="bench-hint">Эталон: Qwen2.5-0.5B INT4 · встроен в приложение</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== RECOMMENDATIONS ========== -->
+    <section id="screen-reco" class="screen screen--reco" hidden>
+      <header class="topbar">
+        <button type="button" class="icon-btn" data-back="power" aria-label="Назад">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <div class="topbar__center">
+          <span class="topbar__title">Рекомендации</span>
+        </div>
+        <span class="topbar__spacer"></span>
+      </header>
+
+      <div class="scroll">
+        <div class="anchor-pill" id="anchor-pill">
+          Ориентир: это устройство · эталон · <strong id="anchor-tps">—</strong> ток/с
+        </div>
+
+        <div class="group">
+          <h3 class="group__title">Рекомендуем</h3>
+          <div class="model-list" id="list-recommended"></div>
+        </div>
+
+        <div class="group">
+          <h3 class="group__title">Можно сильнее</h3>
+          <div class="model-list" id="list-stronger"></div>
+        </div>
+
+        <div class="group group--muted">
+          <h3 class="group__title">Не стоит</h3>
+          <div class="model-list" id="list-skip"></div>
+        </div>
+      </div>
+
+      <footer class="dock">
+        <button type="button" class="btn btn--primary" id="btn-download-reco">Скачать рекомендованный набор</button>
+      </footer>
+    </section>
+
+    <!-- ========== DOWNLOAD ========== -->
+    <section id="screen-download" class="screen screen--download" hidden>
+      <header class="brand-head brand-head--compact">
+        <h1 class="brand">RAGG</h1>
+        <p class="brand-sub">Загрузка моделей</p>
+      </header>
+      <div class="power-card">
+        <h2 class="screen-title">Скачивание</h2>
+        <p class="screen-lead" id="dl-lead">Подготовка кэша…</p>
+        <ul class="dl-list" id="dl-list"></ul>
+        <div class="progress progress--lg">
+          <div class="progress__bar" id="dl-bar"></div>
+        </div>
+        <p class="muted-center" id="dl-pct">0%</p>
+      </div>
+    </section>
+
+    <!-- ========== HOME (CHAT) ========== -->
+    <section id="screen-home" class="screen screen--home">
+      <header class="chat-top">
+        <button type="button" class="icon-btn" id="btn-menu" aria-label="Меню">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+        </button>
+        <div class="chat-top__titles">
+          <span class="brand brand--sm">RAGG</span>
+          <span class="chat-top__name" id="chat-title">Новый чат</span>
+        </div>
+        <div class="chat-top__actions">
+          <button type="button" class="icon-btn" id="btn-save-chat" aria-label="Сохранить как TXT" title="Сохранить как TXT">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h8"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="btn-new-chat" aria-label="Новый чат">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="messages" id="messages" role="log" aria-live="polite"></div>
+
+      <form class="composer" id="composer">
+        <label class="sr-only" for="prompt">Сообщение</label>
+        <textarea id="prompt" rows="1" placeholder="Спросите по вашим документам…" autocomplete="off"></textarea>
+        <button type="submit" class="send-btn" id="btn-send" aria-label="Отправить">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+    </section>
+
+    <!-- ========== MODEL MANAGER ========== -->
+    <section id="screen-models" class="screen screen--models" hidden>
+      <header class="topbar">
+        <span class="topbar__spacer"></span>
+        <div class="topbar__center">
+          <span class="topbar__title">Модели</span>
+        </div>
+        <button type="button" class="icon-btn" data-back="home" aria-label="Закрыть" title="Закрыть">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <div class="scroll">
+        <div class="anchor-pill" id="mm-anchor">Ориентир: —</div>
+        <div class="group">
+          <h3 class="group__title">Установленные</h3>
+          <div class="model-list" id="mm-installed"></div>
+        </div>
+        <div class="group">
+          <h3 class="group__title">Каталог</h3>
+          <div class="model-list" id="mm-catalog"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== RESOURCE MANAGER ========== -->
+    <section id="screen-resources" class="screen screen--resources" hidden>
+      <header class="topbar">
+        <span class="topbar__spacer"></span>
+        <div class="topbar__center">
+          <span class="topbar__title">Ресурсы</span>
+        </div>
+        <button type="button" class="icon-btn" data-back="home" aria-label="Закрыть" title="Закрыть">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <div class="scroll">
+        <div class="stats" id="storage-stats"></div>
+        <p class="drop-hint">Можно копировать файлы напрямую в папку <code>documents/</code> приложения.</p>
+        <div class="group">
+          <div class="group__head">
+            <h3 class="group__title">Документы</h3>
+            <div class="group__actions">
+              <button type="button" class="icon-btn icon-btn--sm" id="btn-refresh-docs" aria-label="Обновить">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v5h-5"/></svg>
+              </button>
+              <button type="button" class="icon-btn icon-btn--sm" id="btn-upload" aria-label="Добавить">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="doc-list" id="doc-list"></div>
+          <input type="file" id="file-input" accept=".txt,.md,.pdf" hidden multiple />
+        </div>
+      </div>
+    </section>
+
+    <!-- Drawer menu -->
+    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="drawer" class="drawer" hidden aria-label="Меню">
+      <div class="drawer__brand">
+        <span class="brand">RAGG</span>
+        <p>Локальный RAG</p>
+      </div>
+      <nav class="drawer__nav">
+        <button type="button" class="drawer__item" data-open="history">История</button>
+        <button type="button" class="drawer__item" data-nav="models">Модели</button>
+        <button type="button" class="drawer__item" data-nav="resources">Ресурсы</button>
+      </nav>
+      <p class="drawer__foot">Демо-прототип · HTML/CSS/JS</p>
+    </aside>
+
+    <!-- History drawer (слева, как меню) -->
+    <div id="hist-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="history-drawer" class="drawer drawer--history" hidden aria-label="История чатов">
+      <div class="drawer__brand">
+        <span class="brand brand--sm">RAGG</span>
+        <p>История</p>
+      </div>
+      <label class="hist-search">
+        <span class="sr-only">Поиск по чатам</span>
+        <svg class="hist-search__icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></svg>
+        <input type="search" id="hist-search" class="hist-search__input" placeholder="Поиск…" autocomplete="off" />
+      </label>
+      <ul class="hist-list" id="hist-list"></ul>
+    </aside>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" hidden role="status"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
