@@ -1,8 +1,9 @@
 (() => {
   "use strict";
 
-  const PERSIST_KEY = "ragg-demo-state-v2";
+  const PERSIST_KEY = "ragg-demo-state-v3";
   const COLLAPSE_BUDGET_MS = 5000;
+  const EMBED_RATIO = 1.35;
 
   const CATALOG = [
     {
@@ -77,9 +78,9 @@
   ];
 
   const MOCK_DOCS = [
-    { id: "d1", name: "handbook.txt", status: "Проиндексирован", bytes: 128_000 },
-    { id: "d2", name: "faq-product.md", status: "Проиндексирован", bytes: 42_000 },
-    { id: "d3", name: "notes-meeting.txt", status: "Ожидает индекс", bytes: 8_400 },
+    { id: "d1", name: "handbook.txt", bytes: 128_000, active: true, vectorBytes: Math.round(128_000 * EMBED_RATIO) },
+    { id: "d2", name: "faq-product.md", bytes: 42_000, active: true, vectorBytes: Math.round(42_000 * EMBED_RATIO) },
+    { id: "d3", name: "notes-meeting.txt", bytes: 8_400, active: false, vectorBytes: 0 },
   ];
 
   const state = {
@@ -89,6 +90,9 @@
     selected: new Set(CATALOG.filter((m) => m.defaultSelected).map((m) => m.id)),
     models: structuredClone(CATALOG),
     docs: structuredClone(MOCK_DOCS),
+    /** черновик выбора: id документов, которые войдут в индекс после «Обновить» */
+    draftActive: new Set(MOCK_DOCS.filter((d) => d.active).map((d) => d.id)),
+    vectorizing: false,
     chats: [
       {
         id: "c1",
@@ -157,6 +161,12 @@
     btnUpload: $("#btn-upload"),
     btnRefreshDocs: $("#btn-refresh-docs"),
     fileInput: $("#file-input"),
+    vectorizeBlock: $("#vectorize-block"),
+    vectorizePhase: $("#vectorize-phase"),
+    vectorizePct: $("#vectorize-pct"),
+    vectorizeBar: $("#vectorize-bar"),
+    vectorizeHint: $("#vectorize-hint"),
+    screenResources: $("#screen-resources"),
     toast: $("#toast"),
   };
 
@@ -169,6 +179,7 @@
       selected: [...state.selected],
       models: state.models,
       docs: state.docs,
+      draftActive: [...state.draftActive],
       chats: state.chats,
       activeChatId: state.activeChatId,
       savedAt: Date.now(),
@@ -198,7 +209,10 @@
       state.etalonTokPerSec = data.etalonTokPerSec;
       state.selected = new Set(data.selected || []);
       state.models = data.models || structuredClone(CATALOG);
-      state.docs = data.docs || structuredClone(MOCK_DOCS);
+      state.docs = (data.docs || structuredClone(MOCK_DOCS)).map(normalizeDoc);
+      state.draftActive = new Set(
+        data.draftActive || state.docs.filter((d) => d.active).map((d) => d.id)
+      );
       state.chats = data.chats || [];
       state.activeChatId = data.activeChatId;
       return { age };
@@ -835,43 +849,101 @@
   }
 
   /* ——— Resources ——— */
+  function normalizeDoc(d) {
+    const active = !!d.active;
+    const bytes = d.bytes || 0;
+    return {
+      id: d.id,
+      name: d.name,
+      bytes,
+      active,
+      vectorBytes: active ? d.vectorBytes ?? Math.round(bytes * EMBED_RATIO) : 0,
+    };
+  }
+
   function fmtMb(bytes) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
   }
 
-  function renderResources() {
-    const sources = state.docs.reduce((s, d) => s + d.bytes, 0);
-    const db = Math.round(sources * 1.35);
-    const modelsBytes = state.models
-      .filter((m) => m.installed)
-      .reduce((s, m) => s + m.sizeMb * 1024 * 1024, 0);
-    const total = sources + db + modelsBytes;
+  function docStatus(d) {
+    const want = state.draftActive.has(d.id);
+    if (d.active && want) return "В индексе";
+    if (!d.active && want) return "Будет добавлен";
+    if (d.active && !want) return "Будет убран";
+    return "Не в индексе";
+  }
+
+  function sortedDocs() {
+    return [...state.docs].sort((a, b) => {
+      const aa = a.active ? 1 : 0;
+      const ba = b.active ? 1 : 0;
+      if (aa !== ba) return ba - aa;
+      return a.name.localeCompare(b.name, "ru");
+    });
+  }
+
+  function indexDirty() {
+    const want = state.draftActive;
+    const have = new Set(state.docs.filter((d) => d.active).map((d) => d.id));
+    if (want.size !== have.size) return true;
+    for (const id of want) if (!have.has(id)) return true;
+    return false;
+  }
+
+  function renderStorageStats() {
+    const activeDocs = state.docs.filter((d) => d.active);
+    const sources = activeDocs.reduce((s, d) => s + d.bytes, 0);
+    const db = activeDocs.reduce((s, d) => s + (d.vectorBytes || 0), 0);
+    const total = sources + db;
     el.storageStats.innerHTML = `
       <div class="stat"><span class="stat__label">Исходники</span><span class="stat__value">${fmtMb(sources)}</span></div>
       <div class="stat"><span class="stat__label">БД / эмбеддинги</span><span class="stat__value">${fmtMb(db)}</span></div>
-      <div class="stat"><span class="stat__label">Модели</span><span class="stat__value">${fmtMb(modelsBytes)}</span></div>
-      <div class="stat"><span class="stat__label">Всего</span><span class="stat__value">${fmtMb(total)}</span></div>
+      <div class="stat"><span class="stat__label">Активных</span><span class="stat__value">${activeDocs.length}</span></div>
+      <div class="stat"><span class="stat__label">Всего на диске</span><span class="stat__value">${fmtMb(total)}</span></div>
     `;
+  }
 
-    el.docList.innerHTML = state.docs
-      .map(
-        (d) => `<article class="doc-card" data-id="${d.id}">
+  function renderResources() {
+    renderStorageStats();
+
+    el.docList.innerHTML = sortedDocs()
+      .map((d) => {
+        const checked = state.draftActive.has(d.id);
+        const pendingAdd = checked && !d.active;
+        const pendingOff = d.active && !checked;
+        const classes = [
+          "doc-card",
+          d.active ? "is-active" : "",
+          checked ? "is-checked" : "",
+          pendingAdd ? "is-pending" : "",
+          pendingOff ? "is-pending-off" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return `<article class="${classes}" data-id="${d.id}" role="button" tabindex="0" aria-pressed="${checked}">
+        <span class="doc-card__check" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12l5 5L20 7"/></svg>
+        </span>
         <div>
           <p class="doc-card__name">${escapeHtml(d.name)}</p>
-          <p class="doc-card__meta">${d.status} · ${fmtMb(d.bytes)}</p>
+          <p class="doc-card__meta">${docStatus(d)} · ${fmtMb(d.bytes)}${d.active && d.vectorBytes ? ` · индекс ${fmtMb(d.vectorBytes)}` : ""}</p>
         </div>
         <div class="doc-card__actions">
-          <button type="button" class="icon-btn icon-btn--sm icon-btn--danger" data-del="${d.id}" aria-label="Удалить">
+          <button type="button" class="icon-btn icon-btn--sm icon-btn--danger" data-del="${d.id}" aria-label="Удалить" title="Удалить">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5h6v2M8 7l1 12h6l1-12"/></svg>
           </button>
         </div>
-      </article>`
-      )
+      </article>`;
+      })
       .join("");
 
     $$("[data-del]", el.docList).forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.docs = state.docs.filter((d) => d.id !== btn.dataset.del);
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (state.vectorizing) return;
+        const id = btn.dataset.del;
+        state.docs = state.docs.filter((d) => d.id !== id);
+        state.draftActive.delete(id);
         showToast("Ресурс удалён");
         renderResources();
         persist();
@@ -879,34 +951,132 @@
     });
   }
 
-  el.btnUpload.addEventListener("click", () => el.fileInput.click());
+  function toggleDocDraft(id) {
+    if (state.vectorizing) return;
+    if (state.draftActive.has(id)) state.draftActive.delete(id);
+    else state.draftActive.add(id);
+    renderResources();
+    persist();
+  }
+
+  el.docList.addEventListener("click", (e) => {
+    if (e.target.closest("[data-del]")) return;
+    const card = e.target.closest(".doc-card[data-id]");
+    if (!card) return;
+    toggleDocDraft(card.dataset.id);
+  });
+
+  el.docList.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const card = e.target.closest(".doc-card[data-id]");
+    if (!card) return;
+    e.preventDefault();
+    toggleDocDraft(card.dataset.id);
+  });
+
+  async function runVectorizeProgress(toAdd, toRemove) {
+    const phases = [
+      { label: "Загрузка embedding-модели…", until: 18, hint: "MiniLM · mmap · кратко в RAM" },
+      {
+        label:
+          toAdd.length || toRemove.length
+            ? `Векторизация: +${toAdd.length} / −${toRemove.length}…`
+            : "Синхронизация индекса…",
+        until: 82,
+        hint: "Обновляем только изменённые источники",
+      },
+      { label: "Выгрузка модели…", until: 100, hint: "Освобождаем RAM после индексации" },
+    ];
+
+    el.vectorizeBlock.hidden = false;
+    el.screenResources.classList.add("is-vectorizing");
+    el.vectorizeBar.style.width = "0%";
+    el.vectorizePct.textContent = "0%";
+    el.vectorizeBar.parentElement.setAttribute("aria-valuenow", "0");
+
+    let pct = 0;
+    for (const phase of phases) {
+      el.vectorizePhase.textContent = phase.label;
+      el.vectorizeHint.textContent = phase.hint;
+      while (pct < phase.until) {
+        pct += 1.2 + Math.random() * 2.8;
+        if (pct > phase.until) pct = phase.until;
+        const v = Math.round(pct);
+        el.vectorizeBar.style.width = `${v}%`;
+        el.vectorizeBar.parentElement.setAttribute("aria-valuenow", String(v));
+        el.vectorizePct.textContent = `${v}%`;
+        await sleep(22);
+      }
+    }
+
+    el.vectorizePhase.textContent = "Готово";
+    el.vectorizeHint.textContent = "Модель выгружена · индекс обновлён";
+    await sleep(350);
+    el.vectorizeBlock.hidden = true;
+    el.screenResources.classList.remove("is-vectorizing");
+  }
+
+  async function applyIndexUpdate() {
+    if (state.vectorizing) return;
+    if (!indexDirty()) {
+      showToast("Изменений нет");
+      return;
+    }
+
+    const want = state.draftActive;
+    const toAdd = state.docs.filter((d) => want.has(d.id) && !d.active);
+    const toRemove = state.docs.filter((d) => d.active && !want.has(d.id));
+
+    state.vectorizing = true;
+    el.btnRefreshDocs.disabled = true;
+    el.btnRefreshDocs.classList.add("is-busy");
+
+    await runVectorizeProgress(toAdd, toRemove);
+
+    for (const d of state.docs) {
+      if (want.has(d.id)) {
+        d.active = true;
+        d.vectorBytes = Math.round(d.bytes * EMBED_RATIO);
+      } else {
+        d.active = false;
+        d.vectorBytes = 0;
+      }
+    }
+
+    state.vectorizing = false;
+    el.btnRefreshDocs.disabled = false;
+    el.btnRefreshDocs.classList.remove("is-busy");
+    renderResources();
+    persist();
+    showToast("Индекс обновлён");
+  }
+
+  el.btnUpload.addEventListener("click", () => {
+    if (state.vectorizing) return;
+    el.fileInput.click();
+  });
+
   el.fileInput.addEventListener("change", () => {
     const files = [...el.fileInput.files];
     for (const f of files) {
+      const id = `d-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       state.docs.unshift({
-        id: `d-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id,
         name: f.name,
-        status: "Индексация…",
         bytes: f.size || 4096,
+        active: false,
+        vectorBytes: 0,
       });
+      state.draftActive.add(id);
     }
     el.fileInput.value = "";
     renderResources();
     persist();
-    showToast(files.length ? `Загружено: ${files.length}` : "Файл не выбран");
-    // mock index complete
-    setTimeout(() => {
-      state.docs.forEach((d) => {
-        if (d.status === "Индексация…") d.status = "Проиндексирован";
-      });
-      if (state.screen === "resources") renderResources();
-      persist();
-    }, 900);
+    showToast(files.length ? `Добавлено: ${files.length} · нажмите обновить` : "Файл не выбран");
   });
 
   el.btnRefreshDocs.addEventListener("click", () => {
-    renderResources();
-    showToast("Список обновлён");
+    applyIndexUpdate();
   });
 
   /* ——— Boot ——— */

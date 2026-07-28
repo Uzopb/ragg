@@ -843,13 +843,71 @@ code {
 }
 
 .doc-card {
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  cursor: pointer;
+}
+
+.doc-card.is-active {
+  background: color-mix(in srgb, var(--gray-700) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--gray-700) 22%, var(--pearl-300));
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--gray-900) 8%, transparent);
+}
+
+.doc-card.is-pending:not(.is-active) {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--pearl-300));
+}
+
+.doc-card.is-active.is-pending-off {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+.doc-card__check {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 1.5px solid var(--gray-400);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: transparent;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.doc-card.is-checked .doc-card__check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.doc-card__check svg {
+  width: 14px;
+  height: 14px;
 }
 
 .doc-card__actions {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+.vectorize {
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.vectorize[hidden] {
+  display: none !important;
+}
+
+.screen--resources.is-vectorizing .icon-btn--sm {
+  pointer-events: none;
+  opacity: 0.45;
 }
 
 .icon-btn--danger {
