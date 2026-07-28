@@ -40,7 +40,7 @@
       <div class="power-card">
         <p class="eyebrow">Первый запуск</p>
         <h2 class="screen-title" id="power-title">Проверка мощности</h2>
-        <p class="screen-lead" id="power-lead">Снимаем профиль железа и калибруем эталонную модель на этом устройстве.</p>
+        <p class="screen-lead" id="power-lead">Снимаем профиль железа, скачиваем эталон и калибруем его на этом устройстве.</p>
 
         <div class="hw-grid" id="hw-grid">
           <div class="hw-cell">
@@ -69,7 +69,7 @@
           <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress__bar" id="bench-bar"></div>
           </div>
-          <p class="bench__hint" id="bench-hint">Эталон: Qwen2.5-0.5B INT4 · встроен в приложение</p>
+          <p class="bench__hint" id="bench-hint">Эталон: SmolLM-360M Q4 · download (~80 МБ)</p>
         </div>
       </div>
     </section>
@@ -197,7 +197,7 @@
       </header>
       <div class="scroll">
         <div class="stats" id="storage-stats"></div>
-        <p class="drop-hint">Отметьте источники для индекса и нажмите обновить — embedding-модель загрузится только на время векторизации, затем выгрузится. Можно копировать файлы в <code>documents/</code>.</p>
+        <p class="drop-hint">Отметьте источники и нажмите обновить: LLM выгрузится, embedding загрузится только на векторизацию (Staging→commit), затем выгрузится. Только удаления — без embedding. Можно копировать файлы в <code>documents/</code>.</p>
         <div class="group">
           <div class="group__head">
             <h3 class="group__title">Документы</h3>
@@ -218,7 +218,10 @@
             <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <div class="progress__bar" id="vectorize-bar"></div>
             </div>
-            <p class="bench__hint" id="vectorize-hint">Embedding загружается только на время индексации</p>
+            <div class="vectorize__foot">
+              <p class="bench__hint" id="vectorize-hint">Serial ModelSession · emb эфемерна · commit/rollback</p>
+              <button type="button" class="text-btn" id="btn-cancel-vectorize" aria-label="Отменить индексацию">Отмена</button>
+            </div>
           </div>
           <div class="doc-list" id="doc-list"></div>
           <input type="file" id="file-input" accept=".txt,.md,.pdf" hidden multiple />

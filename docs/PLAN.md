@@ -16,26 +16,43 @@
 | Каталог моделей | Зашит в приложение (URL HF/зеркало, размер, quant, paramB, minRam, **format**: `gguf`, role: Llm / Embedding) |
 | Инференс | **Всё на llama.cpp**: LLM и embedding — GGUF за `LlmEngine` / `EmbeddingEngine` (два контекста; Mock для UI без натива) |
 | Почему один стек | Максимум выгоды на phone: mmap + Q4_K, без налога второго рантайма (ORT) на RAM под векторы/KV/большую LLM |
-| Оценка скорости | **Якорь = бенч встроенной эталонной GGUF LLM на этом устройстве**; остальные — слабее/сильнее относительно неё |
+| Оценка скорости | **Якорь = бенч эталонной GGUF LLM на этом устройстве** (эталон **скачивается**, не в assets); остальные — слабее/сильнее относительно неё |
 | Главный экран | **Только чат**: сообщения + ввод; **новый чат** и **сохранить TXT** в шапке |
 | Меню (drawer слева) | **История** · **Модели** · **Ресурсы** |
 | История | Отдельный **drawer слева** (как меню): поиск, список, удаление чата; выбор → закрыть drawer → открыть чат. Отдельной иконки истории в шапке **нет** |
 | Ресурсы | Исходники + **векторные базы (Corpus)**; загрузка / обновление / удаление; drop-in в `documents/` |
-| Векторные базы | Несколько **Corpus** (наборов источников); у чата/сессии — **активная база** (или набор); retrieval только по ней |
-| Обновление индекса | При add/remove/change источника, смене embedding-модели или составе базы — **инкрементальный** re-embed; полный rebuild при смене dim/модели |
-| Хранилище | Размеры исходников + БД эмбеддингов **по каждой Corpus** в Менеджере ресурсов |
+| Векторные базы | Несколько **Corpus** на диске; у чата — **ровно одна** активная (`Chat.activeCorpusId`); retrieval только по ней |
+| Default Corpus | При первом старте создаётся **Default**; новый чат без выбора базы → `activeCorpusId = Default` |
+| doc ↔ Corpus (v1) | **UI: один документ → одна Corpus** (схема SQL может допускать N:N позже; в v1 не предлагать «один файл в двух базах» — иначе дубль BLOB) |
+| Смена активной базы | Меняет retrieval **только для новых ответов**; история сообщений не переписывается; в шапке чата — badge/имя активной Corpus |
+| Обновление индекса | Черновик → «Обновить»: **unload LLM → (opt) load emb → delta → unload emb**; только removals — без load emb |
+| Сериализация AI | Единый `ModelSession` + **serial Mutex/dispatcher** на JNI: нельзя embed ∥ generate ∥ bench; чат при `vectorizing` — **обязательный** блок (`Blocked(Indexing)`) |
+| Транзакция индекса | Staging → **атомарный commit**; при снятии с индекса / удалении ресурса — **физическое DELETE чанков** (не хранить «мёртвые» векторы) |
+| Обрыв / отмена индекса | **Нет resume mid-embed.** Cleanup Staging → `status=Ready` → UI «нажмите Обновить снова». `IndexJob.snapshotDraftJson` — аудит / повтор applyDraft, не продолжение с середины |
+| Отмена до Running | На фазах UnloadLlm / LoadEmbed (Staging ещё пуст) — сразу `Cancelled`, Live цел; Commit — атомарная SQL-tx, mid-cancel не применяется |
+| Снятие с индекса vs удаление | Снять (uncheck): файл остаётся, **все Chunk этой пары corpus×doc удаляются**, `included=false`. Корзина: файл + метаданные + чанки. Повторное включение = **полный re-embed**, не «достать старые BLOB» |
+| Изменение файла на диске | Scan при открытии Ресурсов (+ «Обновить»): `contentHash` ≠ → `stale`; re-embed **только** по явному applyDraft, не в фоне |
+| Lifecycle моделей | Emb эфемерна; **¬(emb ∧ llm) резидентно (I1)**; query-path **последовательно**: emb → unload → retrieve → LLM (+ hot-set); после unload — yield + `availableRam` |
+| Бюджет latency query | Целевой overhead swap на mid-phone: **embed query ≤ ~2 с** до retrieve; UI: состояние «Готовим контекст…» (не пустой Idle). Idle-keep emb **не** экономит turn (после LLM emb всё равно выгружен) — не рассчитывать на него в чате |
+| Бенч эталона | Этапы 0–5: Mock / синтетический tok/s для UI и API. **Реальный** GGUF-бенч через llama.cpp — критерий **этапа 6**; unload/cooldown — **повторно замерить на устройстве** в 6 |
+| Infer backend v1 | **CPU-first** (phone и mid Mali). `preferredBackend` / GPU-скоринг — advisory для fit/UI; реальный GPU/Vulkan offload — опция этапа 7 (desktop) |
+| Хранилище | Размеры исходников + БД эмбеддингов **по каждой Corpus** в Менеджере ресурсов; (после v1, если N:N) doc×N → дубли BLOB, StorageStats суммирует |
 | Модели | Экран **Модели**: установленные / каталог; действия **иконками**; здесь же калибровка и рекомендации (не при старте) |
 | Старт приложения | **Всегда Home (чат)** по умолчанию; принудительного онбординга моделей **нет** |
+| Чат без моделей / без базы | Home **не** ворота: composer виден + подсказка. **Send**: без моделей → `Blocked(NoModels)` / ошибка с CTA в Модели; без Corpus → `Blocked(NoActiveCorpus)` |
 | Настройка моделей | Пользователь сам заходит в меню → **Модели** (бенч эталона, рекомендации, скачивание, активация) |
-| Эталон в APK | Одна небольшая **GGUF** LLM (`isEtalon`, `bundledInApp`) — калибровка из экрана Модели |
-| Embedding-модель | Отдельный **GGUF embed** (маленький multilingual / nomic / bge-small и т.п.); не instruct «вместо» embed |
-| Векторный поиск | BLOB в SQLDelight + cosine в Kotlin; working set = чанки **активной Corpus** (бюджет чанков/байт на phone) |
+| Эталон (GGUF) | Одна LLM в каталоге, `isEtalon=true` (напр. SmolLM-360M Q4 / Qwen2.5-0.5B Q4). **Всегда download** в `CachePaths/models` по кнопке **Начать** (пустые Установленные) или из набора. **Не** класть GGUF в APK/assets |
+| GGUF в assets | **Запрещено в v1:** ни etalon, ни embedding, ни прочие веса. В APK — только метаданные каталога (id, URL, sha256, size, …) |
+| Целостность загрузок | У etalon и embedding в каталоге **`sha256` обязателен**; у прочих моделей каталога — тоже обязателен для релиза v1 |
+| Embedding-модель | Отдельный **GGUF embed** (маленький multilingual / nomic / bge-small и т.п.); тоже **только download**; не instruct «вместо» embed |
+| Векторный поиск | BLOB в SQLDelight + cosine в Kotlin; working set = чанки **активной Corpus**; на phone — бюджет (`maxHotChunks` / `maxHotVectorBytes`), иначе page/top-k из SQL. До FTS (этап 7): жёстче лимит знаний **или** простой keyword prefilter (`LIKE`/лёгкий FTS) в 5c/6 |
 | Лимит исходников | По **извлечённому тексту и числу чанков на Corpus**, не по формату файла; TXT≈текст, PDF дороже на парсинге |
 | Ориентация | Только **портрет**; landscape на телефоне — экран-заглушка «поверните устройство» |
-| Фон / сворачивание | Состояние переживает сворачивание до **~5 с**; llama-контексты — unload по low-memory; process death — восстановление по БД/флагам |
+| Фон / сворачивание | **Process death** → восстановление только из БД/флагов (чат, draft, Calibration). Краткий background (Activity recreate) → сохранить UI state; **не** обещать фиксированные «~5 с» как SLA. llama-контексты — unload по low-memory |
 | Визуал | Оттенки **серого и перламутра**; бренд **RAGG** как сильный сигнал; адаптив phone / desktop |
 | DI / сеть / БД / UI | Koin, Ktor, SQLDelight, Compose + Voyager |
 | ONNX / прочие backend | Вне скоупа v1; не подключать второй инференс-рантайм |
+| Документ плана | Канон решений — эта таблица + инварианты I1–I10 + схема этапа 5; этапы описывают **дельты и критерии**, без противоречащих копий |
 
 ---
 
@@ -94,8 +111,9 @@ Home (чат)
 
 ### ModelManagerScreen
 
-- Якорь: «это устройство · эталон · N ток/с» или «ещё не калибровано» + действие замерить.
-- При отсутствии якоря: проверка мощности / бенч эталона / группы рекомендаций — **здесь**, не на старте.
+- Якорь (только после бенча): «это устройство · эталон · N ток/с». До калибровки pill якоря **не показываем**.
+- Пустой блок **Установленные**: «Нет скачанных моделей.» + короткий текст о первичной настройке / скачивании эталона + кнопка **Начать** справа (download etalon → бенч).
+- При отсутствии якоря: настройка только здесь (не на старте приложения).
 - Карточка: **название + badge** в одной строке; meta ниже.
 - Действия **справа иконками**: активировать, прогнать вживую, удалить; в каталоге — скачать.
 - Группы: Установленные / Каталог (и секции рекомендаций после бенча).
@@ -104,16 +122,19 @@ Home (чат)
 
 - Сверху StorageStats (исходники, БД **по базам**, модели, всего).
 - Блок **Векторные базы (Corpus)**: список, создать / переименовать / удалить; **активировать** базу для поиска в текущем чате.
-- Подсказка drop-in `documents/` (новые файлы → в выбранную/дефолтную Corpus).
-- Заголовок «Документы» + фильтр по активной/выбранной базе + иконки **обновить индекс** и **добавить** справа.
-- Строка документа: meta + принадлежность к базе + **корзина**; чекбокс «в этой базе» / перенос между базами.
-- Статусы индекса: актуален / устарел / индексация…; кнопка **обновить базу** (инкрементально).
+- Подсказка: отметить источники → «Обновить» — **embedding загружается только на время векторизации, затем выгружается**; drop-in в `documents/`.
+- Заголовок «Документы» + фильтр по базе + иконки **обновить индекс** и **добавить**.
+- Строка документа: чекбокс черновика (`draft` ≠ уже в индексе); статусы «В индексе» / «Будет добавлен» / «Будет убран» / «Не в индексе»; meta + корзина.
+- Блок прогресса векторизации (**как в демо, до 5 фаз**): **Выгрузка LLM… → Загрузка embedding… → Векторизация ±N… → Выгрузка emb… → Commit**; removals-only — одна фаза без emb. На время `vectorizing` — **блок** UI Ресурсов и composer на Home (`Blocked(Indexing)`). Кнопка **Отмена** → rollback Staging, Live цел.
+- Кнопка **обновить** применяет diff черновика к индексу (инкремент); полный rebuild — при смене embedding-модели.
 
 ### Лимиты ресурсов (смартфон)
 
-- Целевой объём **на активную Corpus**: порядка **10–20 документов** или жёстче — по `maxChunks` / `maxVectorBytes`.
-- Упор: **RAM** (mmap GGUF LLM + краткий embed-контекст llama.cpp + working set векторов активной базы), затем CPU индексации, затем диск.
+- Целевой объём **на активную Corpus**: порядка **10–20 документов** или жёстче — по `maxChunks` / `maxVectorBytes` / `maxExtractedChars`.
+- Упор: **RAM**. Пик при индексации = embed GGUF (+ буферы), **без** LLM. В чате пик **последовательный** (не одновременный): краткий emb на query → unload emb → hot-set retrieve → LLM; **¬(emb ∧ llm)** (I1).
+- Embedding после индексации **обязательно unload** — иначе нет выигрыша под LLM/векторы.
 - Много баз на диске ок; в RAM / cosine — **только активная** (hot-set).
+- Hot-set: если Live corpus > `maxHotChunks` / `maxHotVectorBytes` — не грузить всю базу в heap; cosine по страницам / candidate set (FTS prefilter в этапе 7, до него — SQL LIMIT + batch).
 - Лимит знаний = извлечённый текст и чанки; формат (TXT/PDF) влияет на парсинг, не на формулу поиска после индекса.
 
 ---
@@ -132,7 +153,7 @@ flowchart TD
   Probe --> Rank[Рекомендации weaker / etalon / stronger]
   Rank --> MM[скачать / activate / live bench / delete]
   MM --> Home
-  MenuRes --> RM[Corpus: выбрать / обновить индекс + документы + StorageStats]
+  MenuRes --> RM[draft источников → load emb → vectorize → unload]
   RM --> Folder[documents/ drop-in → Corpus]
 ```
 
@@ -142,10 +163,10 @@ flowchart TD
 - `models/` — Catalog, PerfEstimator, ModelManager, Downloader
 - `cache/` — CachePaths expect/actual
 - `db/` — SQLDelight (Corpus, Document, Chunk, Chat, Calibration, …)
-- `docs/` — DocumentParser, CorpusIndexer (chunk + embed + incremental update)
-- `ai/` — `LlmEngine` + `EmbeddingEngine` (оба llama.cpp/GGUF), Mock
+- `docs/` — DocumentParser, CorpusIndexer, IndexTransaction
+- `ai/` — ModelSession (serial), LlmEngine, EmbeddingEngine (llama.cpp/GGUF), Mock
 - `di/` — Koin-модули
-- `chat/` — история чатов, экспорт TXT, привязка `activeCorpusId`
+- `chat/` — история чатов, экспорт TXT, `activeCorpusId`; уважает `ModelSession.vectorizing` / `lease`
 
 ---
 
@@ -155,10 +176,10 @@ flowchart TD
 
 1. **Запуск** → сразу **Home (чат)**. Без экрана проверки мощности и без мастера скачивания.
 2. Меню → **История** (drawer слева: поиск, выбрать, удалить).
-3. Меню → **Ресурсы**: StorageStats, документы; иконки обновить / добавить / удалить; drop-in в `documents/`.
+3. Меню → **Ресурсы**: StorageStats; draft состава индекса; «Обновить» = load emb → vectorize → unload; drop-in в `documents/`.
 4. Меню → **Модели** (когда пользователь сам решил настроить):
    - снять `HardwareProfile` при необходимости;
-   - **бенч** встроенной эталонной модели (кнопка / первый заход без якоря);
+   - пустые Установленные → **Начать**: скачать эталон → бенч (нужна сеть);
    - прогресс: «Прогрев…» → «Генерация…» → `N ток/с`;
    - сохранить якорь `Calibration(etalonModelId, backend, tokPerSec, deviceFingerprint)`;
    - показать рекомендации weaker / etalon / stronger;
@@ -168,27 +189,38 @@ flowchart TD
 
 Отдельного онбординга `PowerCheck → Recommendations → Download → Home` **нет**.
 
-### Встроенная эталонная модель
+### Эталонная модель (download-only)
 
 | Свойство | Решение |
 |----------|---------|
 | Что | Одна **GGUF** LLM из каталога, `isEtalon = true` |
-| Кандидат | Qwen2.5-0.5B-Instruct **Q4_K_M** (или меньше, SmolLM-360M Q4) если размер APK критичен |
-| Где лежит | `assets`; при первом бенче из экрана Модели копируется в `CachePaths/models` при необходимости |
-| Embedding | Отдельный GGUF embed (bundled маленький или download) через тот же llama.cpp |
-| Backend | Один натив llama.cpp; два контекста: `genCtx` (LLM) и `embedCtx` (embedding); n_threads от cores; mmap; без лишней GPU на mid Mali |
+| Кандидат | **SmolLM-360M Q4** или Qwen2.5-0.5B Q4_K_M (и аналоги) — выбор по размеру/качеству якоря, не по «влезет ли в APK» |
+| Доставка | **Только download** (HF/зеркало) → `CachePaths/models`. Поле `bundledInApp` **не используем**; GGUF **не** в assets |
+| Первый бенч | **Начать** (блок Установленные): download etalon → бенч → `Calibration`. Offline без файла → ошибка «нужна сеть» |
+| Embedding | Отдельный GGUF embed, тоже **только download**, тот же llama.cpp |
+| Backend | Один натив llama.cpp; два контекста: `genCtx` (LLM) и `embedCtx` (embedding); n_threads от cores; mmap; **v1: CPU-first**, без GPU offload на mid Mali |
+| Бюджет APK | Веса моделей **не** раздувают установку; в APK только код + JSON-каталог |
 
-Эталон доступен без сети для калибровки; ранжирование остальных — **после** бенча в Моделях.
+Ранжирование остальных — **после** бенча в Моделях (после успешного download etalon).
 
 ### Ранжирование «слабее / сильнее»
 
 После бенча эталона с `measuredTokPerSec = T`:
 
 ```text
+# Относительная «стоимость» генерации (безразмерная). Больше = медленнее.
+# quantFactor: Q8≈1.0, Q5≈0.85, Q4_K≈0.75, Q3≈0.65 (подстроить по замерам)
+cost(model) =
+  model.paramBillions
+  * quantFactor(model.quantName)
+  * (model.approxLayers / etalon.approxLayers).coerceAtLeast(0.5)
+  // embedding-role: cost не для tok/s; отдельная оценка embedMs от dim + size
+
 relativeClass(model) =
-  Weaker   если cost(model) < cost(etalon)
+  Weaker   если cost(model) < cost(etalon) * 0.95
   Etalon   если model.id == etalon.id
-  Stronger если cost(model) > cost(etalon)
+  Stronger если cost(model) > cost(etalon) * 1.05
+  // иначе Etalon-tier (почти равны)
 
 estTok(model) = T * cost(etalon) / cost(model)
 
@@ -204,7 +236,7 @@ UI-группы **на экране Модели** (после калибров�
 - **Можно сильнее** — Stronger с Fits и не Impractical; бейдж «медленнее эталона на ~X%».
 - **Не стоит** — Insufficient / Impractical (свёрнуто или disabled).
 
-«Скачать рекомендованный набор» = embedding + лучший Comfortable LLM (часто эталон — только активировать).
+«Скачать рекомендованный набор» = **download** embedding + лучший Comfortable LLM (часто сам эталон, если ещё не скачан) → activate.
 
 ### Состояния калибровки (экран Модели)
 
@@ -212,13 +244,14 @@ UI-группы **на экране Модели** (после калибров�
 sealed interface CalibrationUiState {
   data object NotCalibrated : CalibrationUiState
   data object PreparingHardware : CalibrationUiState
+  data class DownloadingEtalon(val progress: Float?) : CalibrationUiState
   data class Benchmarking(val phase: String, val progress: Float?) : CalibrationUiState
   data class Ready(
     val profile: HardwareProfile,
     val etalonTokPerSec: Float,
     val groups: RecommendationGroups,
   ) : CalibrationUiState
-  data class Error(val message: String) : CalibrationUiState
+  data class Error(val message: String) : CalibrationUiState  // в т.ч. offline без файла
 }
 ```
 
@@ -305,14 +338,16 @@ data class CapabilityScore(
 - `KnownGpuTable` — Mali-G7x, Adreno 6xx/7xx, NVIDIA/AMD desktop.
 - Неизвестный чип → эвристика по cores/freq/имени GPU.
 
-### Скоринг (только tier / fit / выбор backend до калибровки)
+### Скоринг (только tier / fit / advisory backend до калибровки)
 
 Нормализация по внутренним константам железа (cores/freq/RAM) — **не** заявка на абсолютный tok/s.
 
 ```text
 cpuScore = 0.45*norm(cores) + 0.35*norm(freq) + 0.20*socBoost
 gpuScore = 0 если непригоден для LLM, иначе lookup/heuristic
-preferredBackend = CPU на mid Mali; GPU на desktop если gpuScore > cpuScore*1.2
+preferredBackend = CPU на phone/mid Mali (v1 всегда CPU в рантайме)
+                 // GPU hint только для DesktopHigh + этап 7 offload;
+                 // не влияет на InferBackend фактического llama.cpp в v1
 ```
 
 ### Критерий готовности
@@ -326,24 +361,26 @@ preferredBackend = CPU на mid Mali; GPU на desktop если gpuScore > cpuSc
 
 **Цель:** для каждой модели — fit по RAM и ориентир `~tok/с` / ms для embedding.
 
-### ModelCatalog (bundled)
+### ModelCatalog (метаданные в приложении)
 
-Поля артефакта: `id`, `displayName`, `role` (Embedding/Llm), `format` (`gguf`), `sizeBytes`, `minRamMb`, `paramBillions`, `quantBits` / `quantName` (напр. Q4_K_M), `contextLength`, `approxLayers`, `embeddingDim?`, `downloadUrl`, `sha256?`, `languages`, **`isEtalon`**, **`bundledInApp`**.
+Поля артефакта: `id`, `displayName`, `role` (Embedding/Llm), `format` (`gguf`), `sizeBytes`, `minRamMb`, `paramBillions`, `quantBits` / `quantName` (напр. Q4_K_M), `contextLength`, `approxLayers`, `embeddingDim?`, `downloadUrl`, **`sha256`**, `languages`, **`isEtalon`**. Поля `bundledInApp` **нет** — веса только с сети.
 
-Стартовый набор (всё GGUF):
+Стартовый набор (всё GGUF, всё download):
 
-- **Etalon (bundled):** одна LLM Q4 (0.5B или меньше) — `isEtalon=true`, `bundledInApp=true`, `role=Llm`
-- **Embedding:** маленький multilingual / nomic / bge-small GGUF (bundled или download), `role=Embedding`
-- Сильнее: Qwen2.5-1.5B Q4_K_M и др. (только download), `role=Llm`
+- **Etalon:** одна LLM Q4 — `isEtalon=true`, download-on-first-bench / из набора
+- **Embedding:** маленький multilingual / nomic / bge-small GGUF, `role=Embedding`, download
+- Сильнее: Qwen2.5-1.5B Q4_K_M и др., `role=Llm`
 - Слабее эталона: если эталон 0.5B — опционально 360M; если эталон уже самый маленький — группа «слабее» пустая
 
-**RAM fit (телефон):** mmap GGUF (рабочий RSS < sizeBytes) + headroom под активную Corpus + краткий `embedCtx`; не суммировать «полный размер файла = RAM». LLM и embed **не** держать оба тяжёлыми контекстами без нужды.
+**RAM fit (телефон):** mmap GGUF (рабочий RSS < sizeBytes) + headroom под hot-set активной Corpus + краткий `embedCtx`; не суммировать «полный размер файла = RAM». LLM и embed **не** держать оба тяжёлыми контекстами без нужды.
+
+**cost(model)** — см. формулу в разделе «Ранжирование»; unit-тесты на scale от известных paramB/quant.
 
 ### PerfEstimator — якорь = бенч эталона на устройстве
 
 ```mermaid
 flowchart TD
-  Bundled[Bundled Etalon в приложении] --> Bench[Бенч из экрана Модели]
+  Dl[Download etalon GGUF] --> Bench[Бенч из экрана Модели]
   Bench --> T[measuredTokPerSec T]
   T --> Rank[Weaker / Etalon / Stronger]
   Rank --> Est["estTok = T * costEtalon / costModel"]
@@ -353,6 +390,8 @@ flowchart TD
 **RAM fit** — от текущего `availableRamMb` (как раньше).
 
 **tok/s** — от якоря эталона после бенча в Моделях (High для эталона, Medium для scale). Пока бенч не прогнан — в каталоге fit по RAM + пометка «без якоря»; не гнать пользователя на отдельный стартовый экран.
+
+`preferredBackend` в `ModelFitCard` — **advisory** (v1 runtime = CPU); не обещать GPU-ускорение до этапа 7.
 
 Повторный бенч / «Прогнать вживую» в Моделях обновляет якорь.
 
@@ -374,8 +413,9 @@ data class ModelFitCard(
 ### Тесты
 
 - Fit по RAM: mid 6GB → 0.5B Fits; 3B Tight/Insufficient.
-- После бенча эталона T=5.0 → Weaker/Stronger классы и scale `estTok` от T.
-- `bundledInApp` эталон доступен без сети для `runEtalonBenchmark()`.
+- После бенча эталона T=5.0 → Weaker/Stronger классы и scale `estTok` от T через `cost()`.
+- Unit: `cost(1.5B Q4) > cost(0.5B Q4)`; `estTok` слабее > T, сильнее < T.
+- Offline без скачанного etalon → `runEtalonBenchmark()` ошибка «нужна сеть»; после download (до этапа 6 — Mock tok/s) → якорь в БД.
 - Чужой `deviceFingerprint` игнорируется.
 
 ### Критерий готовности
@@ -410,37 +450,41 @@ data class ModelFitCard(
 
 ```kotlin
 fun observeCards(): Flow<List<ModelFitCard>>
-suspend fun runEtalonBenchmark(): Float          // калибровка из экрана Модели
+suspend fun runEtalonBenchmark(): Float          // API калибровки; до этапа 6 — Mock tok/s
 fun recommendations(): RecommendationGroups      // weaker / etalon / stronger
 suspend fun download(modelId: String)
 suspend fun cancel(modelId: String)
 suspend fun delete(modelId: String)
 suspend fun setActive(modelId: String)
-suspend fun runBenchmark(modelId: String): Float // живой прогон + оценка
+suspend fun runBenchmark(modelId: String): Float // живой прогон; до этапа 6 — Mock
 ```
 
-Эталон GGUF с `bundledInApp` копируется из assets в cache при первом бенче из Моделей при необходимости. Скачивание — только GGUF; различает `role=Llm` и `role=Embedding`.
+`runEtalonBenchmark`: если etalon ещё не в cache → сначала `download(etalonId)` (нужна сеть), затем бенч. Скачивание — только GGUF; различает `role=Llm` и `role=Embedding`. **Никаких** копий из assets.
+
+> **Граница Mock / native:** на этапе 3 `runEtalonBenchmark` / `runBenchmark` идут через `MockLlmEngine` (или stub) и пишут синтетический `Calibration.tokPerSec` — чтобы UI Моделей и `PerfEstimator` работали без JNI. Подмена на `LlamaCppLlmEngine` и **реальный** якорь tok/s — **этап 6**.
 
 `StorageStatsProvider.stats(): StorageStats` — показ в **Ресурсах** (позже per-Corpus).
+
 ### Калибровка (якорь = бенч эталона на устройстве)
 
 1. Пользователь открывает **Модели** (не обязательный шаг при старте).
-2. Бенч **bundled etalon** → запись `Calibration(...)`.
-3. Каталог ранжируется: weaker / etalon / stronger + comfort от `estTok`.
-4. Повторный «Замерить» / «Прогнать вживую» обновляет якорь.
-5. UI: «Ориентир: это устройство · эталон &lt;id&gt; · N ток/с» или «ещё не калибровано».
+2. **Начать** / повторный прогон: **download etalon** (если нет) → бенч → запись `Calibration(...)` (до этапа 6 — mock-значение).
+3. Каталог ранжируется: weaker / etalon / stronger + comfort от `estTok` / `cost()`.
+4. «Прогнать вживую» обновляет якорь (повторный download не нужен, если файл на месте).
+5. UI: после бенча — «Ориентир: … · N ток/с»; до калибровки якорь скрыт; пустые Установленные — «Нет скачанных моделей.» + **Начать**.
 
 ### Критерий готовности
 
-- Без сети: из Моделей прогон бенча эталона из assets → якорь в БД → список weaker/stronger.
-- С сетью: скачивание выбранных моделей в кэш, activate.
+- Offline **без** скачанного etalon: бенч недоступен (понятная ошибка).
+- С сетью: download etalon (+ embedding / другие) → Mock-бенч → якорь в БД → weaker/stronger.
 - Старт приложения при этом всегда открывает Home, не Модели.
-
+- Реальный GGUF-бенч **не** требуется на этом этапе (см. этап 6).
+- В APK/assets **нет** файлов `.gguf`.
 ---
 
 ## Этап 4 — UI: Home (чат), меню, Модели / Ресурсы
 
-**Цель:** старт с чата; история / модели / ресурсы — из меню. Визуал и IA — по [`docs/demo/`](demo/). Принудительного онбординга моделей нет.
+**Цель:** старт с чата; история / модели / ресурсы — из меню. Визуал и IA — по [`docs/demo/`](demo/). Принудительного онбординга моделей нет. Логика индекса / `ModelSession` — **mock**; реальный serial/tx — этап 5.
 
 ### HomeScreen (главный — открывается при старте)
 
@@ -448,6 +492,7 @@ suspend fun runBenchmark(modelId: String): Float // живой прогон + о
 - Сообщения + composer + стриминг (`ChatState`).
 - На Home **нет** списка документов, моделей, storage, **нет** иконки истории.
 - Без настроенных моделей — не блокировать; подсказка зайти в меню → Модели.
+- Подписка на mock/`vectorizing`: при индексации composer → `Blocked(Indexing)` (**обязательно**, не «желательно»).
 
 ### Меню (drawer слева)
 
@@ -466,22 +511,23 @@ suspend fun runBenchmark(modelId: String): Float // живой прогон + о
 
 ### ModelManagerScreen (вся настройка моделей)
 
-1. Якорь устройства или состояние «не калибровано» + бенч эталона.
-2. Рекомендации weaker / etalon / stronger после калибровки; скачивание набора.
-3. Установленные: иконки activate / «прогнать вживую» / delete; badge у названия.
-4. Каталог: иконка скачать.
+1. Якорь устройства — только после бенча (иначе скрыт).
+2. Пустые Установленные → текст + **Начать** (download etalon → бенч); после — рекомендации weaker / etalon / stronger; скачивание набора (etalon + embed — оба с сети).
+3. Установленные: иконки activate / «прогнать вживую» / delete (etalon тоже можно удалить → снова пустой блок с **Начать**); badge у названия.
+4. Каталог: иконка скачать (включая эталон, пока не установлен).
 5. Отдельного `DevicePowerCheckScreen` как первого экрана приложения **нет** — логика калибровки встроена сюда.
 
 ### ResourceManagerScreen
 
-1. **StorageStats:** исходники / БД (сумма и **per-Corpus**) / модели / всего.
-2. **Векторные базы:** список Corpus; создать / переименовать / удалить; **сделать активной** (для текущего чата / дефолт).
-3. Подсказка drop-in `documents/` → файлы попадают в выбранную базу (или Default).
-4. «Документы» (фильтр по базе) + иконки **обновить индекс** и **добавить**.
-5. Строка: статус индексации, размер, база; перенос/вкл в базе; **корзина** — удалить файл + чанки; при необходимости пометить Corpus `stale`.
-6. **Обновить базу:** инкрементальный пересчёт устаревших документов; полный rebuild — при смене embedding-модели или ручном «Пересобрать».
+1. **StorageStats:** исходники / БД (сумма и **per-Corpus**) / модели / всего (mock или лёгкий подсчёт файлов).
+2. **Векторные базы:** список Corpus; создать / переименовать / удалить; **сделать активной** (одна на чат).
+3. Подсказка: чекбоксы = черновик состава индекса; embedding **load → vectorize → unload** только по «Обновить»; drop-in → выбранная/Default Corpus.
+4. «Документы» + иконки **обновить индекс** и **добавить**; UI прогресса (**до 5 фаз**, как в [`docs/demo/`](demo/)): UnloadLlm → LoadEmbed → Running → UnloadEmbed → Commit; removals-only — одна фаза.
+5. Diff: `draftIncluded` vs `indexed` → toAdd / toRemove; статусы pending на карточках.
+6. На время векторизации: `vectorizing=true` — нельзя менять состав, удалять, добавлять; **обязательно** `ChatState.Blocked(Indexing)` на Home; кнопка **Отмена** (на этапе 4 — отмена mock-таймера).
+7. После успеха: commit черновика в индекс (mock), emb «выгружена», StorageStats обновлён.
 
-> Выбор и обновление векторных баз — **часть этапов 4–6**, не отложенная перспектива. Hot-set retrieval = активная Corpus (на phone критично для RAM).
+> UI-контракт демо (draft + фазы + блок чата) — этап 4 на **mock**. `ModelSession` / `IndexTransaction` / физический DELETE — **этап 5**.
 
 ### Навигация
 
@@ -489,22 +535,31 @@ suspend fun runBenchmark(modelId: String): Float // живой прогон + о
 [старт]       Home (чат)
                 ├─ меню → HistoryDrawer → select chat → Home
                 ├─ меню → ModelManager → закрыть → Home
-                └─ меню → ResourceManager (Corpus + docs) → закрыть → Home
+                └─ меню → ResourceManager (draft docs → mock vectorize) → закрыть → Home
 ```
 
 ### Критерий готовности
 
 - Приложение стартует на Home; онбординг-моделей нет.
 - История только из меню-drawer; Модели/Ресурсы — закрыть ✕.
-- В Ресурсах виден список Corpus и переключение активной базы (хотя бы UI + заглушка данных).
-- Калибровка и скачивание доступны из Моделей.
+- В Ресурсах: черновик состава, mock-прогресс до 5 фаз (и removals-only), блок UI + composer при `vectorizing`.
+- Калибровка и скачивание доступны из Моделей (wire к этапу 3).
 - Портрет; UI соответствует демо по структуре экранов.
+- Нет требования, что индекс уже транзакционный — это этап 5.
 
 ---
 
 ## Этап 5 — Менеджер ресурсов, Corpus, drop-in, учёт размера
 
-**Цель:** исходники и **несколько векторных баз**; выбор активной базы; инкрементальное обновление индекса; StorageStats.
+**Цель:** исходники и **несколько векторных баз**; draft состава; applyDraft с load/unload embedding; StorageStats; serial `ModelSession`.
+
+Внутри этапа — три поставки (можно отдельные PR):
+
+| Подэтап | Фокус | Готово когда |
+|---------|--------|--------------|
+| **5a** | Схема SQLDelight + draft/diff UI-wire + drop-in + StorageStats (без натива) | CRUD Corpus/Document; `draftIncluded`; mock apply пишет «индекс» без emb |
+| **5b** | `ModelSession` (Mutex, lease, unload/cooldown, `vectorizing`) + Mock engines | Unit: lease serial; `runGenerate` отвергается при `vectorizing` |
+| **5c** | `IndexTransaction` + `CorpusIndexer.applyDraft` + cancel + startup cleanup + тесты I1–I8 | Реальный Staging→commit; removals DELETE; orphan GC |
 
 ### CachePaths / DocumentsDir
 
@@ -514,16 +569,180 @@ suspend fun runBenchmark(modelId: String): Float // живой прогон + о
 ### Модель данных (SQLDelight)
 
 ```text
-Corpus(id, title, embeddingModelId, createdAt, updatedAt, status, chunkCount, vectorBytes)
+Corpus(
+  id, title, embeddingModelId, createdAt, updatedAt,
+  status,              -- Ready | Indexing
+  indexJobId?,         -- текущая/оборванная операция
+  chunkCount, vectorBytes, liveRevision
+)
 Document(id, title, sourcePath, sourceBytes, createdAt, contentHash, status)
-CorpusDocument(corpusId, documentId, included, indexedRevision, stale)
-Chunk(id, corpusId, documentId, ordinal, text, embedding BLOB, embedRevision)
-Chat(..., activeCorpusId)   // какая база участвует в RAG этого чата
+CorpusDocument(corpusId, documentId, included, draftIncluded, indexedRevision, stale)
+Chunk(
+  id, corpusId, documentId, ordinal, text,
+  embedding BLOB, embedRevision,
+  stage               -- Live | Staging
+)
+IndexJob(
+  id, corpusId, kind,  -- ApplyDraft | Rebuild
+  startedAt, phase,   -- UnloadLlm | LoadEmbed | Running | UnloadEmbed | Commit | Cancelling
+  error?,
+  snapshotDraftJson?,  -- аудит / повтор applyDraft после обрыва (НЕ mid-embed resume)
+  finishedAt?,
+  outcome?             -- Done | Failed | Cancelled
+)
+Chat(..., activeCorpusId)  -- ровно одна активная база на чат
 ```
 
-- Один документ может входить в **несколько** Corpus (или копироваться политикой v1: 1 doc → 1 corpus — упрощение допустимо, схема выше предпочтительнее).
-- `stale` / `indexedRevision` ≠ `embedRevision` → база нуждается в обновлении.
-- Смена `embeddingModelId` у Corpus → все чанки этой базы `stale` → полный re-embed базы.
+- UI чекбоксов → `draftIncluded`; retrieval / cosine / FTS / StorageStats индекса — **только** `included=true` **и** `Chunk.stage=Live`.
+- **Запрещено** оставлять embedding-BLOB при `included=false`.
+- Один документ → несколько Corpus (v1: UI может ограничить 1→1; схема допускает N; чанки/BLOB **дублируются** per corpus — StorageStats суммирует).
+- Смена `embeddingModelId` → `rebuild` (новые Staging, затем замена Live).
+- Статус `NeedsRollback` **не используем**: при обрыве всегда cleanup Staging → `Ready` (см. startup).
+
+### Политика удаления (без призраков в поиске)
+
+| Действие | Исходник | Document | CorpusDocument | Chunk + embedding |
+|----------|----------|----------|----------------|-------------------|
+| Снять с индекса (uncheck + Обновить) | остаётся | остаётся | `included=false` | **DELETE все** по (corpusId, documentId) |
+| Снова включить | остаётся | остаётся | `included=true` после commit | **заново** chunk+embed (`toAdd`); старых BLOB нет |
+| Корзина «удалить ресурс» | удалить файл | DELETE | DELETE | **DELETE** |
+| Удалить Corpus | файлы: см. orphan GC | — | DELETE связей | **DELETE** Chunk корпуса |
+
+```text
+I7  included=false ⇒ нет Chunk для этой пары corpus×doc
+I8  re-include ⇒ re-embed (нет undelete BLOB)
+I9  ровно один activeCorpusId на Chat; retrieval только по нему
+I10 нет mid-embed resume: обрыв/cancel ⇒ Staging gone, Live цел, повтор applyDraft
+```
+
+Почему не кешировать векторы «на потом»: на phone риск ложных cosine-hit и рассинхрона `contentHash`/модели выше выгоды диска. Быстрый re-include без re-embed — только явная стадия `Parked` вне retrieval (не v1).
+
+### Orphan GC (файлы в `documents/`)
+
+Запуск: после удаления Document / Corpus, при открытии Resource Manager, и best-effort при старте.
+
+```text
+orphans = files(documents/) − { Document.sourcePath | Document существует }
+для каждого orphan: удалить файл (лог); не трогать модели/
+Document без файла на диске → UI stale + предложить удалить метаданные
+```
+
+Общий файл, ещё привязанный к другому Corpus через `CorpusDocument`, **не** удалять при удалении одной базы.
+
+### ModelSession — сериализация (обязательно) — подэтап 5b
+
+Один процессный фасад; все вызовы llama.cpp только через него.
+
+```kotlin
+enum class AiLease { Idle, Embedding, Generation, Benchmark }
+
+interface ModelSession {
+  val lease: StateFlow<AiLease>
+  val vectorizing: StateFlow<Boolean>          // true на весь applyDraft/rebuild (вкл. removals-only)
+  val embedResident: Boolean
+  val llmResident: Boolean
+
+  /** Единый serial scope: Mutex + limitedParallelism(1) для JNI */
+  suspend fun <T> withLease(lease: AiLease, block: suspend () -> T): T
+
+  suspend fun ensureEmbedLoaded(modelId: String)
+  suspend fun unloadEmbed()
+  suspend fun ensureLlmLoaded(modelId: String)
+  suspend fun unloadLlm()
+
+  /** После unload: yield + optional delay; не грузить следующий GGUF мгновенно */
+  suspend fun cooldownAfterUnload()
+}
+
+/** Чат / бенч / индекс — только через эти entry-points */
+suspend fun ModelSession.runEmbed(block: suspend EmbeddingEngine.() -> T): T =
+  withLease(AiLease.Embedding) {
+    // ensure embed; unload LLM if needed; block; policy unload/idle
+  }
+
+suspend fun ModelSession.runGenerate(block: suspend LlmEngine.() -> T): T =
+  withLease(AiLease.Generation) {
+    check(!vectorizing.value) { "indexing" }
+    // unload embed (unless idle-keep); ensure LLM; block
+  }
+```
+
+Правила:
+
+1. `withLease` взаимно исключает Embedding / Generation / Benchmark.
+2. Любой `ensureEmbedLoaded` внутри себя делает `unloadLlm()` + `cooldownAfterUnload()` при необходимости.
+3. `vectorizing=true` на время всей транзакции индекса (включая removals-only) → `runGenerate` → `ChatState.Blocked(Indexing)`.
+4. Native calls — **только** на `Dispatchers`-serial (не Default pool); запрет embed∥generate на разных потоках.
+5. `onTrimMemory` / фон → `unloadEmbed` + `unloadLlm` через тот же Mutex (не гонка с индексом).
+
+### IndexTransaction — commit / rollback / cancel — подэтап 5c
+
+```text
+applyDraft / rebuild:
+
+  1. INSERT IndexJob; Corpus.status = Indexing; vectorizing=true
+     сохранить snapshotDraftJson (= текущий draft) для аудита / UI «повторить»
+  2. diff: toAdd / toUpdate(contentHash) / toRemove
+  3. if toRemove only (нет toAdd/toUpdate):
+       в ОДНОЙ SQL-транзакции:
+         DELETE Chunk WHERE corpusId AND documentId IN toRemove
+         UPDATE CorpusDocument SET included=false, …
+         пересчитать chunkCount / vectorBytes
+       IndexJob done; status=Ready; vectorizing=false; return  // без emb
+  4. ModelSession: unloadLlm → cooldown → ensureEmbedLoaded
+  5. для каждого doc в toAdd∪toUpdate:
+       писать Chunk.stage=Staging (retrieval их не видит)
+       emit VectorizeProgress.Running
+       if cancel requested → goto cancel
+  6. unloadEmbed (finally)
+  7. COMMIT-фаза (одна SQL-транзакция на corpus):
+       DELETE Chunk WHERE stage=Live AND documentId IN (toRemove ∪ toUpdate)
+       UPDATE Chunk SET stage=Live WHERE stage=Staging
+       для toRemove: included=false (чанков уже нет)
+       для toAdd/toUpdate: included=true; indexedRevision++; stale=false
+       обновить chunkCount, vectorBytes, liveRevision
+       Corpus.status = Ready; IndexJob outcome=Done; vectorizing=false
+  8. при ошибке / OOM:
+       DELETE Chunk WHERE stage=Staging
+       Live и included без изменений
+       Failed(rolledBack=true); status=Ready; vectorizing=false
+
+cancel (кнопка «Отмена» / JobCancellation):
+  phase=Cancelling
+  прервать embed loop; unloadEmbed
+  DELETE Chunk WHERE stage=Staging
+  Live / included неизменны; draft на UI сохраняется
+  IndexJob outcome=Cancelled; status=Ready; vectorizing=false
+  Failed(rolledBack=true) или отдельный Cancelled в Flow
+```
+
+Важно: шаг 7 **сначала удаляет** старые Live убираемых/обновляемых документов, **потом** поднимает Staging — всё в одной tx. После commit для снятых документов **нулевой** Chunk.
+
+**Нет resume mid-embed:** `snapshotDraftJson` не продолжают с ordinal N; после обрыва пользователь жмёт «Обновить» снова (полный diff от актуального draft).
+
+Старт приложения:
+
+```text
+если Corpus.status == Indexing или IndexJob открыт (finishedAt IS NULL):
+  DELETE Chunk WHERE stage=Staging
+  IndexJob.outcome = Failed (interrupted); finishedAt = now
+  status=Ready; vectorizing=false
+  UI: «Индексация прервана — нажмите Обновить снова»
+  // Live не трогали → ложных совпадений от Staging нет
+```
+
+Retrieval:
+
+```sql
+-- канонический фильтр (и в Kotlin working set тот же предикат)
+SELECT c.* FROM Chunk c
+JOIN CorpusDocument cd ON cd.corpusId = c.corpusId AND cd.documentId = c.documentId
+WHERE c.corpusId = :active
+  AND cd.included = 1
+  AND c.stage = 'Live'
+```
+
+Даже при баге «забыли JOIN» — после remove чанков физически нет. При restore без re-embed искать нечего → UX «нужно Обновить».
 
 ### CorpusIndexer
 
@@ -531,19 +750,48 @@ Chat(..., activeCorpusId)   // какая база участвует в RAG э�
 interface CorpusIndexer {
   suspend fun addDocuments(corpusId: String, paths: List<String>)
   suspend fun removeDocument(corpusId: String, documentId: String)
-  suspend fun setIncluded(corpusId: String, documentId: String, included: Boolean)
-  suspend fun refresh(corpusId: String)          // инкремент: только stale
-  suspend fun rebuild(corpusId: String)          // полный re-embed
+  suspend fun setDraftIncluded(corpusId: String, documentId: String, included: Boolean)
+  fun applyDraft(corpusId: String): Flow<VectorizeProgress>
+  fun rebuild(corpusId: String): Flow<VectorizeProgress>
+  fun cancelActiveJob(corpusId: String)          // cancel mid-apply
   fun observeCorpus(corpusId: String): Flow<CorpusStats>
+}
+
+sealed interface VectorizeProgress {
+  data object UnloadingLlm : VectorizeProgress
+  data class LoadingEmbed(val modelId: String) : VectorizeProgress
+  data class Running(val done: Int, val total: Int, val added: Int, val removed: Int) : VectorizeProgress
+  data object UnloadingEmbed : VectorizeProgress
+  data object Committing : VectorizeProgress
+  data object Cancelling : VectorizeProgress
+  data object Done : VectorizeProgress
+  data class Failed(val message: String, val rolledBack: Boolean) : VectorizeProgress
+  data object Cancelled : VectorizeProgress
 }
 ```
 
 Политика phone:
 
-- cosine / working set только для `Chat.activeCorpusId` (и `included=true`);
-- бюджеты на Corpus: `maxChunks`, `maxVectorBytes`, `maxExtractedChars` — отказ с понятной ошибкой;
-- векторы в BLOB: предпочтительно **float16 или int8**;
-- chunking: зафиксировать `chunkTokens` / `overlap` (ориентир 256–384 / 10–15%).
+1. Пик RAM = только emb (или только LLM), никогда оба.
+2. Removals-only → без load emb; `vectorizing` всё равно true на время короткой tx.
+3. `finally` → `unloadEmbed` + сброс `vectorizing`.
+4. Бюджеты `maxChunks` / `maxVectorBytes` / `maxExtractedChars` — fail **до** commit (Staging чистится).
+5. Векторы: f16/i8; chunk 256–384 tok, overlap 10–15%.
+6. Idle-timeout emb на Home (напр. 45–60 с) — опция внутри `runEmbed`, не ломает сериализацию.
+7. Hot-set: `maxHotChunks` / `maxHotVectorBytes`; иначе batch cosine из SQL, не полный heap load.
+
+### Тесты (этап 5c — критерий)
+
+- Unit: removals-only не вызывает `ensureEmbedLoaded` и **удаляет все Chunk** документа.
+- Unit: после uncheck `SELECT` по documentId → 0 чанков; cosine не видит текст снятого doc.
+- Unit: re-include того же файла создаёт новые Chunk id/revision (не undelete).
+- Unit: при исключении mid-run Staging нет, Live неизменны (`rolledBack=true`).
+- Unit: cancel mid-run → Staging gone, Live цел, `Cancelled`.
+- Unit: `runGenerate` во время `vectorizing` отвергается.
+- Unit: два параллельных `withLease` не пересекаются (Mutex).
+- Unit: `cost()` / estTok scale (если ещё не в этапе 2 — smoke).
+- После «crash» (статус Indexing при старте) — Staging очищен, Live цел, outcome Interrupted.
+- Orphan GC: файл без Document удалён; файл с двумя Corpus остаётся после удаления одной.
 
 ### StorageStats
 
@@ -553,22 +801,23 @@ data class StorageStats(
   val databaseBytes: Long,
   val modelsBytes: Long,
   val totalBytes: Long,
-  val perCorpus: List<CorpusStorageRow>, // vectorBytes, chunkCount, staleCount
+  val perCorpus: List<CorpusStorageRow>,
 )
 ```
 
+Считать только `Chunk.stage=Live` (+ исходники: уникальные `sourcePath`, не ×N Corpus). Векторы в `perCorpus` — с дублированием, если один doc в нескольких базах.
+
 ### DocumentParser + поиск
 
-- TXT потоково; PDF следом.
-- Retrieval: кандидаты активной Corpus → (опц. FTS) → cosine top‑k → контекст в LLM.
-- Лимит — по чанкам/байтам **активной** базы; архив других Corpus на диске не грузится в RAM.
+- TXT потоково; PDF — этап 7 (в 5 — TXT достаточно).
+- Retrieval: `included` + `stage=Live` активной Corpus → cosine top‑k (с hot-set бюджетом).
+- Query-path только через `ModelSession.runEmbed` → retrieve → `runGenerate`.
 
-### Критерий готовности
+### Критерий готовности (весь этап 5)
 
-- CRUD Corpus; назначение документов; активная база на чате.
-- Refresh обновляет только stale; rebuild — полная пересборка векторов базы.
-- Drop-in → документ в выбранной/Default Corpus.
-- StorageStats отражает исходники и БД per-Corpus.
+- **5a:** draft + Corpus CRUD + drop-in + StorageStats.
+- **5b:** ModelSession serial + блок чата при `vectorizing`.
+- **5c:** applyDraft с фазами UnloadLlm / LoadEmbed / Running / UnloadEmbed / Commit; cancel; startup cleanup; I1–I10.
 
 ---
 
@@ -593,14 +842,41 @@ class LlamaCppEmbeddingEngine(...) : EmbeddingEngine // GGUF embed, отдель
 
 ### Жизненный цикл (phone)
 
-| Фаза | Резидентно | Выгрузить |
-|------|------------|-----------|
-| Индексация / refresh Corpus | `embedCtx` (+ веса embed GGUF) | `genCtx` / LLM |
-| Чат: embed query | `embedCtx` кратко | после query-вектора — free/unload emb |
-| Чат: generate | `genCtx` (LLM GGUF, mmap) | emb |
-| Low memory / фон | минимум | оба контекста |
+```mermaid
+sequenceDiagram
+  participant UI as ResourceManager
+  participant MS as ModelSession
+  participant IX as CorpusIndexer
+  participant DB as IndexTransaction
+  UI->>IX: applyDraft(corpus)
+  IX->>MS: vectorizing=true
+  IX->>MS: withLease(Embedding)
+  MS->>MS: unloadLlm + cooldown
+  Note over UI: Выгрузка LLM…
+  MS->>MS: ensureEmbedLoaded
+  Note over UI: Загрузка embedding…
+  IX->>DB: write Chunk Staging
+  Note over UI: Векторизация ±N…
+  MS->>MS: unloadEmbed
+  Note over UI: Выгрузка emb…
+  IX->>DB: commit Staging→Live / rollback
+  Note over UI: Commit
+  IX->>MS: vectorizing=false
+  IX-->>UI: Done | Failed(rolledBack)
+```
 
-Не держать instruct и embed контексты активными одновременно без нужды — экономия под векторный working set.
+| Фаза | Резидентно | Запрещено |
+|------|------------|-----------|
+| applyDraft / rebuild | только emb (после unload LLM) | generate, bench, второй apply |
+| removals-only | ничего | generate (`vectorizing=true` на короткой DB-tx) |
+| query embed | emb кратко / idle | generate параллельно |
+| generate | LLM | embed, vectorize |
+| low-memory | — | держать любой ctx |
+| cancel | — | новый apply до сброса `vectorizing` |
+
+`ChatScreenModel` подписан на `ModelSession.vectorizing` / `lease`: composer disabled + текст «Идёт индексация» / «Модель занята».
+
+UI Ресурсов: кнопка **Отмена** на прогрессе → `CorpusIndexer.cancelActiveJob`.
 
 ### ChatState
 
@@ -609,22 +885,24 @@ sealed interface ChatState {
   data object Idle : ChatState
   data object Loading : ChatState
   data class Streaming(val text: String) : ChatState
+  data class Blocked(val reason: BlockReason) : ChatState  // Indexing, LeaseBusy
   data class Error(val message: String) : ChatState
 }
+enum class BlockReason { Indexing, LeaseBusy, NoActiveCorpus, NoModels }
 ```
 
 ### UI
 
-- **HomeScreen** — чат; в meta/шапке или через Ресурсы — какая **активная база** (название Corpus).
+- **HomeScreen** — чат; активная Corpus; уважение `Blocked(Indexing)`.
 - **HistoryDrawer** — из меню; поиск; выбор закрывает drawer.
-- `ChatScreenModel`: `chatState`, `activeCorpusId`, история, экспорт TXT.
+- `ChatScreenModel`: только `ModelSession.runEmbed` / `runGenerate`.
 - Меню → История / Model Manager / Resource Manager.
 
 ### Натив
 
-- **Один** runtime llama.cpp (Android/Desktop JNI + CMake, ABI splits).
-- Два logical engine: load GGUF по `role`; bench LLM → Calibration; embed-ms → `ModelFitCard.estimatedEmbedMs`.
-- Каталог: все артефакты `format=gguf`; роли не смешивать (instruct ≠ embedding-модель).
+- Один runtime llama.cpp; **все** вызовы через `ModelSession` serial dispatcher.
+- Bench эталона — `withLease(Benchmark)` (вытесняет idle; не во время vectorizing).
+- Каталог: `format=gguf`; роли Llm / Embedding не смешивать.
 
 ### Навигация Voyager
 
@@ -635,9 +913,10 @@ Home → HistoryDrawer | ModelManager | ResourceManager → закрыть → H
 
 ### Критерий готовности
 
-- Mock-чат на Home; TXT; история из меню.
-- С нативом: RAG по **активной Corpus** (embed GGUF → retrieve → LLM GGUF stream).
-- Калибровка эталона GGUF только в Моделях; UI как в демо.
+- Wire: чат + TXT + история из меню; UI блок при Indexing (контракт этапа 4–5).
+- **Натив:** `LlamaCppLlmEngine` / `LlamaCppEmbeddingEngine` вместо Mock; RAG через serial `ModelSession`; индекс транзакционный.
+- **Реальный** бенч эталона GGUF в Моделях → живой `Calibration.tokPerSec` (замена mock-якоря этапа 3).
+- Фазы векторизации как в демо (+ UnloadLlm / Commit); query-path: emb → unload → retrieve → LLM.
 
 ---
 
@@ -658,7 +937,10 @@ Home → HistoryDrawer | ModelManager | ResourceManager → закрыть → H
 
 - Полноценный Wasm/Web
 - ONNX Runtime / второй инференс-backend
-- Облачный каталог моделей (остаётся bundled)
+- GPU offload на mid-phone (desktop — опция этапа 7)
+- Mid-embed resume индекса (только cleanup + повтор applyDraft)
+- Parked / undelete embedding-BLOB
+- Облачный каталог моделей (метаданные остаются в APK; веса — download)
 - Полный офлайн-бенч всех чипсетов мира (только таблицы + калибровка)
 - Облачный/удалённый векторный индекс
 
@@ -677,35 +959,76 @@ flowchart LR
 ```
 
 1. Пользователь создаёт базы («Работа», «Учёба», …) в Менеджере ресурсов.
-2. Источники добавляются в базу (или несколько); drop-in → текущая/Default.
-3. **Активная база** выбирается для чата (и запоминается в `Chat.activeCorpusId`).
-4. **Обновить базу** — `CorpusIndexer.refresh`: пересчёт чанков/эмбеддингов только для `stale` / новых / изменённых (`contentHash`).
-5. Смена embedding-модели или «Пересобрать» — `rebuild` этой Corpus; другие базы не трогаем.
-6. StorageStats и лимиты phone считаются **per-Corpus**; в RAM — только активная.
+2. Источники в draft; drop-in → текущая/Default (`draftIncluded=true`).
+3. **Активная база** — ровно один `Chat.activeCorpusId`.
+4. **Обновить** — `applyDraft`: serial ModelSession + IndexTransaction (Staging → commit/rollback/cancel).
+5. Смена embedding-модели / «Пересобрать» — `rebuild` той же схемой.
+6. StorageStats — Live + уникальные исходники; векторы per-Corpus (с дублированием при doc×N).
+7. Файл emb-модели на диске всегда; в RAM — только под lease Embedding.
+8. Обрыв / Отмена — **не** resume: cleanup Staging, Live цел, снова «Обновить».
 
-Это закрывает и «разные источники», и контроль объёма эмбеддингов без обязательной одной огромной матрицы.
+### Инварианты (зафиксировано)
+
+```text
+I1  ¬(embedResident ∧ llmResident)
+I2  vectorizing ⇒ ¬runGenerate
+I3  retrieval ⇒ included=true ∧ stage=Live
+I4  ошибка / cancel applyDraft ⇒ Staging удалён, Live без изменений
+I5  старт при status=Indexing ⇒ cleanup Staging, предложить повторить (нет mid-embed resume)
+I6  все JNI llama.cpp → один serial dispatcher
+I7  included=false ⇒ нет Chunk для этой пары corpus×doc
+I8  re-include ⇒ re-embed (нет undelete BLOB)
+I9  Chat.activeCorpusId — ровно одна база; retrieval только по ней
+I10 snapshotDraftJson — аудит/повтор, не продолжение с ordinal N
+```
+
+### Подводные камни → закрытие в дизайне
+
+| Риск | Закрытие |
+|------|----------|
+| Пик LLM+emb | `ensureEmbedLoaded` после `unloadLlm` + cooldown |
+| Чат во время векторизации | `vectorizing` + `ChatState.Blocked(Indexing)` (обязательно) |
+| Только удаления | без emb + **DELETE Chunk**; `vectorizing` на tx |
+| Призраки в поиске после uncheck | физический DELETE векторов (I7) |
+| Restore «пустой» поиск | ожидаемо: снова Обновить → re-embed из файла (I8) |
+| «Resume» после краша | **нет**: cleanup + повтор applyDraft (I5, I10) |
+| Отмена mid-embed | `Cancelling` → Staging DELETE → Live цел |
+| Orphan файлы | GC: files − Document.sourcePath; общий файл не трогать |
+| Hot-set OOM | `maxHotChunks` / `maxHotVectorBytes` + batch cosine |
+| APK раздут весами | GGUF **не** в assets; etalon и embed только download |
+| Offline без etalon | Бенч/калибровка недоступны до скачивания; UI объясняет |
+| Cold start «Обновить» | draft-батч; опц. idle keep-alive emb |
+| Query-path | emb → unload → retrieve → LLM (**последовательно**, I1); бюджет ≤~2 с на embed query; idle-keep не экономит turn |
+| Unload ≠ мгновенный RAM | `cooldownAfterUnload` + availableRam |
+| Смена emb-модели | `rebuild` + предупреждение UI |
+| Гонки JNI | `withLease` + serial dispatcher |
+| GPU-обещания в UI | v1 CPU-first; preferredBackend advisory |
+| Latency query-path | UI «Готовим контекст…»; замер на устройстве в этапе 6 |
 
 ## Сводка этапов
 
 | Этап | Название | Результат |
 |------|----------|------------|
 | 0 | Зависимости + Koin | Сборка и DI |
-| 1 | HardwareProbe + Score | Профиль CPU/RAM/GPU |
-| 2 | Catalog + PerfEstimator | GGUF etalon, weaker/stronger, scale от бенча |
-| 3 | Cache + Downloader + Manager API | Bundled GGUF etalon, якорь, скачивание |
-| 4 | Home-чат + меню | Старт → Home; UI Corpus-заготовки в Ресурсах |
-| 5 | Resource Manager + Corpus + StorageStats | Базы, источники, refresh/rebuild, размеры |
-| 6 | Chat + llama.cpp engines | GGUF embed + GGUF LLM; RAG по активной базе |
-| 7 | Полировка | PDF, FTS, UX Corpus, docs |
+| 1 | HardwareProbe + Score | Профиль CPU/RAM/GPU; backend advisory |
+| 2 | Catalog + PerfEstimator | GGUF etalon (download), `cost()`, weaker/stronger |
+| 3 | Cache + Downloader + Manager API | Download etalon/embed, **Mock**-якорь, скачивание |
+| 4 | Home-чат + меню | Старт → Home; mock draft/фазы/блок чата |
+| 5a | Corpus schema + draft + StorageStats | CRUD, drop-in, diff |
+| 5b | ModelSession serial | lease / vectorizing / cooldown |
+| 5c | IndexTransaction + cancel | Staging/commit, I1–I10, orphan GC |
+| 6 | Chat + llama.cpp | Native engines; **реальный** бенч; runEmbed→unload→runGenerate |
+| 7 | Полировка | PDF, FTS, UX Corpus, desktop GPU opt, docs |
 
 ---
 
 ## Пример сценария (Helio G95, 6+2 ГБ)
 
 1. Запуск → сразу **Home (чат)**; модели ещё можно не трогать.
-2. Меню → Модели → бенч bundled GGUF etalon (0.5B Q4_K) → например **5–8 ток/с** (mmap).
-3. Эталон = база; сильнее (1.5B) — оценка ниже; скачать embed-GGUF + нужный LLM-GGUF.
-4. ✕ → Home; меню → Ресурсы: создать Corpus «Работа», загрузить TXT, **обновить базу**; размеры per-Corpus.
-5. Сделать Corpus активной для чата; второй набор документов — в другой базе (на диске, не в RAM).
-6. Чат: embed query (llama.cpp) → retrieve по активной базе → ответ LLM stream (llama.cpp).
+2. Меню → Модели → **скачать** etalon (напр. SmolLM-360M Q4) → бенч → например **5–8 ток/с** (mmap, CPU). Offline без файла — ошибка.
+3. Эталон = база `cost`; сильнее (1.5B) — `estTok` ниже; скачать embed-GGUF + нужный LLM-GGUF (всё с сети, APK без весов).
+4. ✕ → Home; меню → Ресурсы: отметить источники (draft), **Обновить** → UnloadLlm → LoadEmbed → Running → UnloadEmbed → Commit; размеры per-Corpus.
+5. Сделать **одну** Corpus активной для чата; второй набор — в другой базе (на диске, не в RAM).
+6. Чат: краткий embed query → unload emb → retrieve hot-set → LLM stream (llama.cpp).
 7. Меню → История: поиск, выбор чата; сохранение диалога в TXT.
+8. Обрыв mid-vectorize / Отмена → Staging очищен; Live цел; снова «Обновить».

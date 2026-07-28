@@ -1,61 +1,61 @@
 (() => {
   "use strict";
 
-  const PERSIST_KEY = "ragg-demo-state-v3";
+  const PERSIST_KEY = "ragg-demo-state-v5";
   const COLLAPSE_BUDGET_MS = 5000;
   const EMBED_RATIO = 1.35;
 
   const CATALOG = [
     {
-      id: "minilm",
-      name: "MiniLM multilingual",
+      id: "bge-small",
+      name: "bge-small-en GGUF",
       role: "Embedding",
-      size: "90 МБ",
-      sizeMb: 90,
+      size: "≈60 МБ",
+      sizeMb: 60,
       group: "recommended",
-      meta: "Обязателен для RAG · Fits",
+      meta: "GGUF embed · download · обязателен для RAG · Fits",
       badge: "embedding",
       badgeClass: "badge--ok",
       defaultSelected: true,
-      installed: true,
-      active: true,
-    },
-    {
-      id: "qwen05",
-      name: "Qwen2.5-0.5B INT4",
-      role: "LLM",
-      size: "380 МБ",
-      sizeMb: 380,
-      group: "recommended",
-      meta: "Эталон · ~4.8 ток/с · Fits",
-      badge: "эталон",
-      badgeClass: "badge--ok",
-      defaultSelected: true,
-      installed: true,
-      active: true,
-      isEtalon: true,
+      installed: false,
+      active: false,
     },
     {
       id: "smol360",
-      name: "SmolLM-360M INT4",
+      name: "SmolLM-360M Q4",
       role: "LLM",
-      size: "220 МБ",
-      sizeMb: 220,
+      size: "≈80 МБ",
+      sizeMb: 80,
       group: "recommended",
-      meta: "Слабее эталона · быстрее · Fits",
-      badge: "быстрее",
+      meta: "Эталон · download · Fits",
+      badge: "эталон",
       badgeClass: "badge--ok",
+      defaultSelected: true,
+      installed: false,
+      active: false,
+      isEtalon: true,
+    },
+    {
+      id: "qwen05",
+      name: "Qwen2.5-0.5B Q4_K_M",
+      role: "LLM",
+      size: "≈380 МБ",
+      sizeMb: 380,
+      group: "stronger",
+      meta: "Сильнее · download · ~3.2 ток/с · Fits",
+      badge: "медленнее",
+      badgeClass: "badge--warn",
       defaultSelected: false,
       installed: false,
     },
     {
       id: "qwen15",
-      name: "Qwen2.5-1.5B INT4",
+      name: "Qwen2.5-1.5B Q4_K_M",
       role: "LLM",
-      size: "980 МБ",
+      size: "≈980 МБ",
       sizeMb: 980,
       group: "stronger",
-      meta: "Сильнее · ~1.5 ток/с · медленнее на ~69%",
+      meta: "Сильнее · ~1.5 ток/с · медленнее на ~77%",
       badge: "медленнее",
       badgeClass: "badge--warn",
       defaultSelected: false,
@@ -63,7 +63,7 @@
     },
     {
       id: "phi3",
-      name: "Phi-3-mini INT4",
+      name: "Phi-3-mini Q4",
       role: "LLM",
       size: "2.2 ГБ",
       sizeMb: 2200,
@@ -86,13 +86,14 @@
   const state = {
     screen: "home",
     onboardingDone: true,
-    etalonTokPerSec: 4.8,
+    etalonTokPerSec: null,
     selected: new Set(CATALOG.filter((m) => m.defaultSelected).map((m) => m.id)),
     models: structuredClone(CATALOG),
     docs: structuredClone(MOCK_DOCS),
     /** черновик выбора: id документов, которые войдут в индекс после «Обновить» */
     draftActive: new Set(MOCK_DOCS.filter((d) => d.active).map((d) => d.id)),
     vectorizing: false,
+    cancelVectorize: false,
     chats: [
       {
         id: "c1",
@@ -166,9 +167,21 @@
     vectorizePct: $("#vectorize-pct"),
     vectorizeBar: $("#vectorize-bar"),
     vectorizeHint: $("#vectorize-hint"),
+    btnCancelVectorize: $("#btn-cancel-vectorize"),
     screenResources: $("#screen-resources"),
     toast: $("#toast"),
   };
+
+  function setComposerBlocked(blocked, reason) {
+    el.composer.classList.toggle("is-blocked", blocked);
+    el.prompt.disabled = blocked || state.streaming;
+    el.btnSend.disabled = blocked || state.streaming;
+    if (blocked) {
+      el.prompt.placeholder = reason || "Идёт индексация…";
+    } else {
+      el.prompt.placeholder = "Спросите по вашим документам…";
+    }
+  }
 
   /* ——— Persistence (survive collapse ≤5s) ——— */
   function serialize() {
@@ -325,7 +338,7 @@
     el.hwTier.textContent = "…";
     el.powerTitle.textContent = "Проверка мощности";
     el.powerLead.textContent =
-      "Снимаем профиль железа и калибруем эталонную модель на этом устройстве.";
+      "Снимаем профиль железа, скачиваем эталон и калибруем его на этом устройстве.";
 
     if (!skipAnim) await sleep(500);
     el.hwCpu.textContent = hw.cpuStr;
@@ -334,8 +347,9 @@
     el.hwTier.textContent = hw.tier;
 
     const phases = [
-      { label: "Прогрев эталона…", until: 35 },
-      { label: "Генерация…", until: 85 },
+      { label: "Скачивание эталона…", until: 40 },
+      { label: "Прогрев эталона…", until: 60 },
+      { label: "Генерация…", until: 90 },
       { label: "Калибровка якоря…", until: 100 },
     ];
 
@@ -361,10 +375,16 @@
       }
     }
 
-    const tps = +(3.8 + Math.random() * 2.2).toFixed(1);
+    const tps = +(5.2 + Math.random() * 2.6).toFixed(1);
     state.etalonTokPerSec = tps;
+    const etalon = state.models.find((m) => m.isEtalon);
+    if (etalon) {
+      etalon.installed = true;
+      etalon.active = true;
+      etalon.meta = `Эталон · download · ~${tps} ток/с · Fits`;
+    }
     el.benchPhase.textContent = `Результат: ${tps} ток/с`;
-    el.benchHint.textContent = `Якорь сохранён · эталон Qwen2.5-0.5B · ${hw.tier}`;
+    el.benchHint.textContent = `Якорь сохранён · эталон скачан · SmolLM-360M Q4 · ${hw.tier}`;
     el.powerTitle.textContent = "Устройство откалибровано";
     el.powerLead.textContent =
       "Относительно эталона ранжируем каталог: слабее / эталон / сильнее.";
@@ -398,7 +418,7 @@
         actionBtns = `
           <button type="button" class="icon-btn icon-btn--sm ${m.active ? "is-active" : ""}" data-act="activate" data-id="${m.id}" ${m.active ? "disabled" : ""} aria-label="${m.active ? "Активна" : "Активировать"}" title="${m.active ? "Активна" : "Активировать"}">${ICONS.activate}</button>
           <button type="button" class="icon-btn icon-btn--sm" data-act="bench" data-id="${m.id}" aria-label="Прогнать вживую" title="Прогнать вживую">${ICONS.bench}</button>
-          ${m.isEtalon ? "" : `<button type="button" class="icon-btn icon-btn--sm icon-btn--danger" data-act="delete" data-id="${m.id}" aria-label="Удалить" title="Удалить">${ICONS.trash}</button>`}`;
+          <button type="button" class="icon-btn icon-btn--sm icon-btn--danger" data-act="delete" data-id="${m.id}" aria-label="Удалить" title="Удалить">${ICONS.trash}</button>`;
       } else {
         actionBtns = `<button type="button" class="icon-btn icon-btn--sm" data-act="download" data-id="${m.id}" ${disabled ? "disabled" : ""} aria-label="Скачать" title="Скачать">${ICONS.download}</button>`;
       }
@@ -646,7 +666,7 @@
   el.composer.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = el.prompt.value.trim();
-    if (!text || state.streaming) return;
+    if (!text || state.streaming || state.vectorizing) return;
     ensureActiveChat();
     const chat = activeChat();
     chat.messages.push({ role: "user", text });
@@ -687,7 +707,11 @@
       return "По индексированным документам: возврат в течение 14 дней при сохранённой упаковке. Укажите номер заказа — подскажу следующий шаг.";
     }
     if (lower.includes("модел") || lower.includes("эталон")) {
-      return `Якорь устройства: эталон Qwen2.5-0.5B · ${state.etalonTokPerSec ?? "—"} ток/с. Управление моделями — в меню «Модели».`;
+      const tps = state.etalonTokPerSec;
+      if (tps == null) {
+        return "Моделей ещё нет. Меню → Модели → в блоке «Установленные» нажмите «Начать»: скачается эталон и пройдёт калибровка устройства.";
+      }
+      return `Якорь устройства: эталон SmolLM-360M Q4 (download) · ${tps} ток/с. Управление моделями — в меню «Модели».`;
     }
     return `Ответ по локальному контексту (mock): нашёл релевантные фрагменты в ваших документах. Вопрос «${q.slice(0, 80)}» обработан без облака. Добавьте файлы в Менеджере ресурсов для более точных ответов.`;
   }
@@ -796,13 +820,69 @@
   }
 
   /* ——— Model manager ——— */
+  function renderMmAnchor() {
+    if (state.etalonTokPerSec == null) {
+      el.mmAnchor.hidden = true;
+      el.mmAnchor.textContent = "";
+    } else {
+      el.mmAnchor.hidden = false;
+      el.mmAnchor.textContent = `Ориентир: это устройство · эталон · ${state.etalonTokPerSec} ток/с`;
+    }
+  }
+
+  function installedEmptyHtml() {
+    return `<div class="mm-empty">
+      <div class="mm-empty__head">
+        <p class="mm-empty__title">Нет скачанных моделей.</p>
+        <button type="button" class="text-btn" id="btn-setup-start">Начать</button>
+      </div>
+      <p class="mm-empty__text">Первичная настройка устройства: снимем профиль железа и скачаем эталонную GGUF-модель (~80&nbsp;МБ) — она нужна, чтобы измерить скорость именно на этом телефоне или ПК.</p>
+      <p class="mm-empty__text">После короткого бенча появится якорь ток/с и рекомендации: какие модели слабее или сильнее эталона стоит ставить дальше.</p>
+    </div>`;
+  }
+
+  async function startDeviceSetup() {
+    const btn = $("#btn-setup-start");
+    const etalon = state.models.find((m) => m.isEtalon);
+    if (!etalon) return;
+    if (btn) btn.disabled = true;
+    try {
+      showToast("Скачивание эталона…");
+      await sleep(1400);
+      etalon.installed = true;
+      etalon.active = true;
+      state.models.forEach((x) => {
+        if (x.role === "LLM" && x.id !== etalon.id) x.active = false;
+      });
+      showToast(`Скачано: ${etalon.name}`);
+      renderModels();
+
+      showToast("Калибровка эталона…");
+      await sleep(1200);
+      const t = +(5.2 + Math.random() * 2.6).toFixed(1);
+      state.etalonTokPerSec = t;
+      etalon.meta = `Эталон · download · ~${t} ток/с · Fits`;
+      showToast(`Якорь: ${t} ток/с`);
+      persist();
+      renderModels();
+    } finally {
+      const again = $("#btn-setup-start");
+      if (again) again.disabled = false;
+    }
+  }
+
   function renderModels() {
-    const tps = state.etalonTokPerSec ?? "—";
-    el.mmAnchor.textContent = `Ориентир: это устройство · эталон · ${tps} ток/с`;
+    renderMmAnchor();
     const installed = state.models.filter((m) => m.installed);
     const catalog = state.models.filter((m) => !m.installed);
-    el.mmInstalled.innerHTML = installed.map((m) => modelCardHtml(m, { manager: true })).join("") || "<p class='screen-lead'>Нет установленных моделей</p>";
+    el.mmInstalled.innerHTML = installed.length
+      ? installed.map((m) => modelCardHtml(m, { manager: true })).join("")
+      : installedEmptyHtml();
     el.mmCatalog.innerHTML = catalog.map((m) => modelCardHtml(m, { manager: true })).join("") || "<p class='screen-lead'>Каталог пуст</p>";
+
+    $("#btn-setup-start")?.addEventListener("click", () => {
+      startDeviceSetup();
+    });
 
     $$("[data-act]", $("#screen-models")).forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -824,7 +904,9 @@
           const t = +(2.5 + Math.random() * 4).toFixed(1);
           if (m.role === "LLM") {
             state.etalonTokPerSec = t;
-            m.meta = `Живой прогон · ~${t} ток/с`;
+            m.meta = m.isEtalon
+              ? `Эталон · download · ~${t} ток/с · Fits`
+              : `Живой прогон · ~${t} ток/с`;
           }
           showToast(`Оценка: ${t} ток/с`);
           renderModels();
@@ -832,6 +914,10 @@
         } else if (act === "delete") {
           m.installed = false;
           m.active = false;
+          if (m.isEtalon) {
+            state.etalonTokPerSec = null;
+            m.meta = "Эталон · download · Fits";
+          }
           showToast(`Удалено: ${m.name}`);
           renderModels();
           persist();
@@ -840,6 +926,9 @@
           btn.classList.add("is-busy");
           await sleep(1200);
           m.installed = true;
+          if (m.isEtalon) {
+            m.meta = "Эталон · download · скачан · замерьте якорь";
+          }
           showToast(`Скачано: ${m.name}`);
           renderModels();
           persist();
@@ -975,30 +1064,51 @@
   });
 
   async function runVectorizeProgress(toAdd, toRemove) {
-    const phases = [
-      { label: "Загрузка embedding-модели…", until: 18, hint: "MiniLM · mmap · кратко в RAM" },
-      {
-        label:
-          toAdd.length || toRemove.length
-            ? `Векторизация: +${toAdd.length} / −${toRemove.length}…`
-            : "Синхронизация индекса…",
-        until: 82,
-        hint: "Обновляем только изменённые источники",
-      },
-      { label: "Выгрузка модели…", until: 100, hint: "Освобождаем RAM после индексации" },
-    ];
+    const needEmbed = toAdd.length > 0;
+    const phases = needEmbed
+      ? [
+          { label: "Выгрузка LLM…", until: 10, hint: "Освобождаем RAM перед embedding" },
+          { label: "Загрузка embedding-модели…", until: 22, hint: "GGUF embed · mmap · кратко в RAM" },
+          {
+            label: `Векторизация: +${toAdd.length} / −${toRemove.length}…`,
+            until: 78,
+            hint: "Пишем Staging · Live пока не трогаем",
+          },
+          { label: "Выгрузка embedding…", until: 90, hint: "Модель выгружена" },
+          { label: "Commit индекса…", until: 100, hint: "Staging → Live · атомарно" },
+        ]
+      : [
+          {
+            label:
+              toRemove.length > 0
+                ? `Удаление из индекса: −${toRemove.length}…`
+                : "Синхронизация индекса…",
+            until: 100,
+            hint: "Без загрузки embedding · только Live",
+          },
+        ];
 
     el.vectorizeBlock.hidden = false;
+    el.btnCancelVectorize.hidden = false;
     el.screenResources.classList.add("is-vectorizing");
     el.vectorizeBar.style.width = "0%";
     el.vectorizePct.textContent = "0%";
     el.vectorizeBar.parentElement.setAttribute("aria-valuenow", "0");
 
     let pct = 0;
+    let cancelled = false;
     for (const phase of phases) {
+      if (state.cancelVectorize) {
+        cancelled = true;
+        break;
+      }
       el.vectorizePhase.textContent = phase.label;
       el.vectorizeHint.textContent = phase.hint;
       while (pct < phase.until) {
+        if (state.cancelVectorize) {
+          cancelled = true;
+          break;
+        }
         pct += 1.2 + Math.random() * 2.8;
         if (pct > phase.until) pct = phase.until;
         const v = Math.round(pct);
@@ -1007,13 +1117,28 @@
         el.vectorizePct.textContent = `${v}%`;
         await sleep(22);
       }
+      if (cancelled) break;
+    }
+
+    if (cancelled) {
+      el.vectorizePhase.textContent = "Отмена…";
+      el.vectorizeHint.textContent = "Staging очищен · Live без изменений";
+      el.btnCancelVectorize.hidden = true;
+      await sleep(400);
+      el.vectorizeBlock.hidden = true;
+      el.screenResources.classList.remove("is-vectorizing");
+      return false;
     }
 
     el.vectorizePhase.textContent = "Готово";
-    el.vectorizeHint.textContent = "Модель выгружена · индекс обновлён";
+    el.vectorizeHint.textContent = needEmbed
+      ? "Emb выгружена · индекс закоммичен"
+      : "Индекс обновлён без embedding";
+    el.btnCancelVectorize.hidden = true;
     await sleep(350);
     el.vectorizeBlock.hidden = true;
     el.screenResources.classList.remove("is-vectorizing");
+    return true;
   }
 
   async function applyIndexUpdate() {
@@ -1028,28 +1153,41 @@
     const toRemove = state.docs.filter((d) => d.active && !want.has(d.id));
 
     state.vectorizing = true;
+    state.cancelVectorize = false;
     el.btnRefreshDocs.disabled = true;
     el.btnRefreshDocs.classList.add("is-busy");
+    setComposerBlocked(true, "Идёт индексация…");
 
-    await runVectorizeProgress(toAdd, toRemove);
+    const committed = await runVectorizeProgress(toAdd, toRemove);
 
-    for (const d of state.docs) {
-      if (want.has(d.id)) {
-        d.active = true;
-        d.vectorBytes = Math.round(d.bytes * EMBED_RATIO);
-      } else {
-        d.active = false;
-        d.vectorBytes = 0;
+    if (committed) {
+      for (const d of state.docs) {
+        if (want.has(d.id)) {
+          d.active = true;
+          d.vectorBytes = Math.round(d.bytes * EMBED_RATIO);
+        } else {
+          d.active = false;
+          d.vectorBytes = 0;
+        }
       }
+      showToast("Индекс обновлён");
+    } else {
+      showToast("Индексация отменена · Live цел");
     }
 
     state.vectorizing = false;
+    state.cancelVectorize = false;
     el.btnRefreshDocs.disabled = false;
     el.btnRefreshDocs.classList.remove("is-busy");
+    setComposerBlocked(false);
     renderResources();
     persist();
-    showToast("Индекс обновлён");
   }
+
+  el.btnCancelVectorize.addEventListener("click", () => {
+    if (!state.vectorizing) return;
+    state.cancelVectorize = true;
+  });
 
   el.btnUpload.addEventListener("click", () => {
     if (state.vectorizing) return;
@@ -1089,7 +1227,6 @@
     if (restored) {
       const screen = skipOnboarding.has(state.screen) ? "home" : state.screen;
       state.onboardingDone = true;
-      if (state.etalonTokPerSec == null) state.etalonTokPerSec = 4.8;
       if (!state.activeChatId) state.activeChatId = state.chats[0]?.id || null;
       showScreen(screen);
       showToast(`Сессия восстановлена (${(restored.age / 1000).toFixed(1)} с)`);
