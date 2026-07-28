@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.uzopb.ragg.ai.llama.isLlamaNativeLinked
+import com.uzopb.ragg.device.CapabilityScorer
 import com.uzopb.ragg.device.HardwareProbe
 import org.koin.compose.koinInject
 
@@ -21,6 +22,7 @@ fun App() {
     MaterialTheme {
         val hardwareProbe = koinInject<HardwareProbe>()
         val profile = remember(hardwareProbe) { hardwareProbe.probe() }
+        val score = remember(profile) { CapabilityScorer.score(profile) }
 
         Column(
             modifier = Modifier
@@ -30,8 +32,21 @@ fun App() {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text("RAGG", style = MaterialTheme.typography.displayMedium)
-            Text("probe=${profile.platformLabel}")
+            Text("${profile.platform} · tier=${score.tier} · backend=${score.preferredBackend}")
+            Text(
+                "RAM ${profile.ram.totalMb}MB · CPU ${profile.cpu.cores}c" +
+                    (profile.cpu.maxFreqMhz?.let { " · ${it}MHz" } ?: "") +
+                    (profile.gpu.name?.let { " · GPU $it" } ?: ""),
+            )
+            Text(
+                "scores cpu=${fmt(score.cpuScore)} gpu=${fmt(score.gpuScore)} ram=${fmt(score.ramScore)}",
+            )
             Text("llama.cpp linked=${isLlamaNativeLinked()}")
         }
     }
+}
+
+private fun fmt(value: Float): String {
+    val scaled = (value * 100f).toInt()
+    return "${scaled / 100}.${(scaled % 100).toString().padStart(2, '0')}"
 }
