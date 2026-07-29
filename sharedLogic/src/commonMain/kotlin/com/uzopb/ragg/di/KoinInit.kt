@@ -4,11 +4,15 @@ import com.uzopb.ragg.ai.EmbeddingEngine
 import com.uzopb.ragg.ai.LlmEngine
 import com.uzopb.ragg.ai.MockEmbeddingEngine
 import com.uzopb.ragg.ai.MockLlmEngine
+import com.uzopb.ragg.ai.SessionGate
+import com.uzopb.ragg.chat.ChatRepository
 import com.uzopb.ragg.db.DatabaseGate
 import com.uzopb.ragg.db.RaggDatabase
 import com.uzopb.ragg.db.SqlCalibrationStore
 import com.uzopb.ragg.db.SqlDelightDatabaseGate
 import com.uzopb.ragg.db.SqlInstalledModelStore
+import com.uzopb.ragg.docs.MockResourceManager
+import com.uzopb.ragg.epochNowMs
 import com.uzopb.ragg.models.CacheStorageStatsProvider
 import com.uzopb.ragg.models.CalibrationStore
 import com.uzopb.ragg.models.EtalonBenchmarkService
@@ -30,10 +34,13 @@ import org.koin.core.module.Module
 import org.koin.dsl.KoinAppDeclaration
 import org.koin.dsl.module
 
-fun initKoin(appDeclaration: KoinAppDeclaration = {}) {
+fun initKoin(
+    extraModules: List<Module> = emptyList(),
+    appDeclaration: KoinAppDeclaration = {},
+) {
     startKoin {
         appDeclaration()
-        modules(raggModules())
+        modules(raggModules() + extraModules)
     }
 }
 
@@ -43,6 +50,8 @@ fun raggModules(): List<Module> = listOf(
     databaseModule,
     aiModule,
     modelsModule,
+    chatModule,
+    resourcesModule,
 )
 
 expect val platformModule: Module
@@ -73,6 +82,7 @@ val databaseModule: Module = module {
 val aiModule: Module = module {
     single<EmbeddingEngine> { MockEmbeddingEngine() }
     single<LlmEngine> { MockLlmEngine() }
+    single { SessionGate() }
 }
 
 val modelsModule: Module = module {
@@ -101,6 +111,7 @@ val modelsModule: Module = module {
             calibrationStore = get(),
             networkStatus = get(),
             llmEngine = get(),
+            nowMs = { epochNowMs() },
         )
     }
     // совместимость с тестами/API этапа 2
@@ -110,6 +121,28 @@ val modelsModule: Module = module {
             catalog = get(),
             localModels = get(),
             calibrationStore = get(),
+            nowMs = { epochNowMs() },
+        )
+    }
+}
+
+val chatModule: Module = module {
+    single {
+        ChatRepository(
+            sessionGate = get(),
+            llmEngine = get(),
+            installed = get(),
+            nowMs = { epochNowMs() },
+        )
+    }
+}
+
+val resourcesModule: Module = module {
+    single {
+        MockResourceManager(
+            sessionGate = get(),
+            storageStatsProvider = get(),
+            chatRepository = get(),
         )
     }
 }

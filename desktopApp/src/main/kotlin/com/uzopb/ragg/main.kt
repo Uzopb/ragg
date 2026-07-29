@@ -2,10 +2,10 @@ package com.uzopb.ragg
 
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
-import com.uzopb.ragg.di.initKoin
+import com.uzopb.ragg.di.initRaggUiKoin
 
 fun main() {
-    initKoin()
+    initRaggUiKoin()
     application {
         Window(
             onCloseRequest = ::exitApplication,
